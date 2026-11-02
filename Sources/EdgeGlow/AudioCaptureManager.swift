@@ -1,11 +1,13 @@
 import Accelerate
 import AppKit
 import Combine
+import CoreAudio
 import CoreMedia
+import QuartzCore
 import ScreenCaptureKit
 
 enum AudioCaptureStatus: Equatable {
-    /// Not capturing (Spotify isn't playing).
+    /// Not capturing (no display enabled, or the screens are asleep / the session is inactive).
     case off
     case starting
     case live
@@ -14,9 +16,9 @@ enum AudioCaptureStatus: Equatable {
     case failed(String)
 }
 
-/// Latest band energies (0…1). Written on the audio queue ~50×/s and read by the renderer every frame,
-/// so it is lock-protected instead of @Published (which would re-render SwiftUI at audio rate).
-final class AudioLevels {
+/// Latest band energies (0…1). Written ~50–120×/s off the main thread and read by the renderer every
+/// frame, so it is lock-protected instead of @Published (which would re-render SwiftUI at audio rate).
+final class AudioLevels: @unchecked Sendable {
     private let lock = NSLock()
     private var bass = 0.0
     private var vocal = 0.0
@@ -35,15 +37,24 @@ final class AudioLevels {
     }
 }
 
-/// Captures the Mac's system audio output with ScreenCaptureKit (no microphone) and turns it into
+/// Captures the Mac's system audio output with ScreenCaptureKit (never the microphone) and turns it into
 /// bass (20–150 Hz) and vocal (300–3000 Hz) energies with a vDSP FFT.
+///
+/// Capture runs whenever at least one display has the glow enabled, independent of which player is in
+/// use, and restarts itself when the default output device changes (Bluetooth, AirPlay, USB). When a
+/// native player reports playback but the Mac stays digitally silent (Spotify Connect, AirPlay sent
+/// from the app), the levels come from Cloud Sync instead, until real audio returns.
 final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
-    private static let log2n = vDSP_Length(11)
-    private static let fftSize = 1 << 11 // 2048 samples ≈ 43 ms at 48 kHz, ~23 Hz per bin
     private static let bassBand = 20.0...150.0
     private static let vocalBand = 300.0...3000.0
-    /// How long to keep capturing after Spotify stops playing, so quick pause/skip doesn't restart the stream.
-    private static let stopGrace: TimeInterval = 8
+    /// Broadband level above which the Mac counts as playing audio (switches back to the live FFT at once).
+    private static let presenceDb = -68.0
+    /// Broadband level below which the Mac counts as silent…
+    private static let silenceDb = -72.0
+    /// …once it has stayed there this long (also used when buffers stop arriving entirely).
+    private static let silenceHold: CFTimeInterval = 1.5
+    /// Output-device changes arrive in bursts while a route settles.
+    private static let routeDebounce: TimeInterval = 0.35
 
     private let state: AppState
     private let sampleQueue = DispatchQueue(label: "com.jplane6.edgeglow.audio", qos: .userInteractive)
@@ -51,37 +62,50 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
     // Main-thread state.
     private var stream: SCStream?
     private var isStarting = false
+    private var restartWhenStarted = false
     private var requestedAccess = false
-    private var stopWorkItem: DispatchWorkItem?
+    private var screensAsleep = false
+    private var sessionActive = true
+    private var routeWorkItem: DispatchWorkItem?
+    private var outputDeviceListener: AudioObjectPropertyListenerBlock?
+    private var workspaceObservers: [NSObjectProtocol] = []
     private var cancellables = Set<AnyCancellable>()
 
     // Sample-queue state.
     private let fftSetup: FFTSetup
-    private let window: [Float]
+    private var log2n = vDSP_Length(0)
+    private var fftSize = 0
+    private var window: [Float] = []
     private var ring: [Float] = []
-    private var windowed: [Float]
-    private var realp: [Float]
-    private var imagp: [Float]
-    private var power: [Float]
+    private var windowed: [Float] = []
+    private var realp: [Float] = []
+    private var imagp: [Float] = []
+    private var power: [Float] = []
     private var sampleRate = 48_000.0
     private var bassEnvelope = 0.0
     private var vocalEnvelope = 0.0
     private var bassPeak = RollingPeak()
     private var vocalPeak = RollingPeak()
+    private var captureRunning = false
+    private var audioPresent = false
+    private var silentSince: CFTimeInterval?
+    private var lastBufferTime: CFTimeInterval = 0
+    private var levelSource = LevelSource.none
+    /// When the native player last went from not playing to playing; Cloud Sync waits out the same
+    /// 1.5 s silence window from here, so local playback that is still spinning up never flashes SYNC.
+    private var nativePlayingSince: CFTimeInterval?
+    private var lastSynthTime: CFTimeInterval?
+    private var ticker: DispatchSourceTimer?
 
     init(state: AppState) {
         self.state = state
-        let n = Self.fftSize
-        guard let setup = vDSP_create_fftsetup(Self.log2n, FFTRadix(kFFTRadix2)) else {
+        // One setup sized for the largest FFT; vDSP setups also serve every smaller power of two.
+        guard let setup = vDSP_create_fftsetup(12, FFTRadix(kFFTRadix2)) else {
             fatalError("vDSP_create_fftsetup failed")
         }
         fftSetup = setup
-        window = vDSP.window(ofType: Float.self, usingSequence: .hanningDenormalized, count: n, isHalfWindow: false)
-        windowed = [Float](repeating: 0, count: n)
-        realp = [Float](repeating: 0, count: n / 2)
-        imagp = [Float](repeating: 0, count: n / 2)
-        power = [Float](repeating: 0, count: n / 2)
         super.init()
+        configureFFT()
     }
 
     deinit {
@@ -90,30 +114,65 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // MARK: Lifecycle
 
-    /// Captures only while Spotify is playing, which also keeps the macOS recording indicator off when idle.
     func start() {
+        // Glow enabled on any display → capture. receive(on:) defers past @Published's willSet.
+        state.$activeDisplays
+            .map(\.isEmpty)
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateCapture() }
+            .store(in: &cancellables)
+        // Wake capture cleanly (e.g. after a failure) the moment any player starts.
         state.$playback
             .removeDuplicates()
-            .sink { [weak self] playback in
-                self?.playbackChanged(to: playback)
-            }
+            .filter { $0 == .playing }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateCapture() }
             .store(in: &cancellables)
+
+        let center = NSWorkspace.shared.notificationCenter
+        let idleEvents: [(Notification.Name, (AudioCaptureManager) -> Void)] = [
+            (NSWorkspace.screensDidSleepNotification, { $0.screensAsleep = true }),
+            (NSWorkspace.screensDidWakeNotification, { $0.screensAsleep = false }),
+            (NSWorkspace.sessionDidResignActiveNotification, { $0.sessionActive = false }),
+            (NSWorkspace.sessionDidBecomeActiveNotification, { $0.sessionActive = true }),
+        ]
+        workspaceObservers = idleEvents.map { name, apply in
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                guard let self else { return }
+                apply(self)
+                self.updateCapture()
+            }
+        }
+
+        installOutputDeviceListener()
+        sampleQueue.async { [self] in startTicker() }
+        updateCapture()
     }
 
     func stop() {
         cancellables.removeAll()
-        stopWorkItem?.cancel()
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        workspaceObservers.removeAll()
+        removeOutputDeviceListener()
+        routeWorkItem?.cancel()
         stopCapture()
+        sampleQueue.async { [self] in
+            ticker?.cancel()
+            ticker = nil
+        }
     }
 
-    private func playbackChanged(to playback: PlaybackState) {
-        stopWorkItem?.cancel()
-        if playback == .playing {
+    /// At least one display shows the glow and the Mac isn't asleep or switched to another user.
+    private var captureWanted: Bool {
+        !state.activeDisplays.isEmpty && !screensAsleep && sessionActive
+    }
+
+    private func updateCapture() {
+        if captureWanted {
             startCapture()
         } else {
-            let work = DispatchWorkItem { [weak self] in self?.stopCapture() }
-            stopWorkItem = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.stopGrace, execute: work)
+            stopCapture()
         }
     }
 
@@ -137,15 +196,29 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
                     isStarting = false
                     self.stream = stream
                     state.audioStatus = .live
-                    // Playback may have stopped while the stream was spinning up.
-                    if !state.isPlaying { playbackChanged(to: state.playback) }
+                    markCaptureRunning()
+                    if restartWhenStarted {
+                        // The output route changed while this stream was spinning up.
+                        restartWhenStarted = false
+                        restartCapture()
+                    } else if !captureWanted {
+                        stopCapture()
+                    }
                 }
             } catch {
                 await MainActor.run { [self] in
                     isStarting = false
+                    restartWhenStarted = false
                     state.audioStatus = Self.isPermissionError(error) ? .permissionNeeded : .failed(error.localizedDescription)
                 }
             }
+        }
+    }
+
+    private func markCaptureRunning() {
+        sampleQueue.async { [self] in
+            captureRunning = true
+            lastBufferTime = CACurrentMediaTime()
         }
     }
 
@@ -160,6 +233,7 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         let config = SCStreamConfiguration()
         config.capturesAudio = true
         config.excludesCurrentProcessAudio = true
+        // A request, not a guarantee: the buffer parser accepts whatever format actually arrives.
         config.sampleRate = 48_000
         config.channelCount = 2
         // SCStreamConfiguration has no audio-only switch, so make the mandatory video stream as cheap
@@ -182,12 +256,72 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         self.stream = nil
         stream.stopCapture { _ in }
         state.audioStatus = .off
-        sampleQueue.async { [self] in resetAnalysis() }
+        sampleQueue.async { [self] in
+            captureRunning = false
+            resetAnalysis()
+        }
+    }
+
+    /// Tears the stream down and builds a fresh one on the current output route.
+    private func restartCapture() {
+        if isStarting {
+            restartWhenStarted = true
+            return
+        }
+        guard let old = stream else {
+            updateCapture()
+            return
+        }
+        stream = nil
+        state.audioStatus = .starting
+        sampleQueue.async { [self] in
+            captureRunning = false
+            resetAnalysis()
+        }
+        old.stopCapture { [weak self] _ in
+            DispatchQueue.main.async { self?.updateCapture() }
+        }
     }
 
     private static func isPermissionError(_ error: Error) -> Bool {
         let nsError = error as NSError
         return nsError.domain == SCStreamErrorDomain && nsError.code == SCStreamError.Code.userDeclined.rawValue
+    }
+
+    // MARK: Output route
+
+    private static var defaultOutputAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+
+    /// Restarts the stream (debounced) whenever the default output device changes, e.g. connecting
+    /// AirPods or picking an AirPlay speaker, so capture follows the new route.
+    private func installOutputDeviceListener() {
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.outputDeviceChanged()
+        }
+        let status = AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &Self.defaultOutputAddress, DispatchQueue.main, listener)
+        if status == noErr {
+            outputDeviceListener = listener
+        }
+    }
+
+    private func removeOutputDeviceListener() {
+        guard let listener = outputDeviceListener else { return }
+        AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &Self.defaultOutputAddress, DispatchQueue.main, listener)
+        outputDeviceListener = nil
+    }
+
+    private func outputDeviceChanged() {
+        routeWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.captureWanted else { return }
+            self.restartCapture()
+        }
+        routeWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.routeDebounce, execute: work)
     }
 
     // MARK: SCStreamDelegate
@@ -196,16 +330,18 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         DispatchQueue.main.async { [self] in
             guard self.stream === stream else { return }
             self.stream = nil
-            sampleQueue.async { [self] in resetAnalysis() }
+            sampleQueue.async { [self] in
+                captureRunning = false
+                resetAnalysis()
+            }
             if Self.isPermissionError(error) {
                 state.audioStatus = .permissionNeeded
                 return
             }
             state.audioStatus = .failed(error.localizedDescription)
-            // Transient failures (display sleep, audio device switch): try again shortly if still playing.
+            // Transient failures (display sleep, audio device switch): try again shortly.
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                guard let self, self.state.isPlaying else { return }
-                self.startCapture()
+                self?.updateCapture()
             }
         }
     }
@@ -214,59 +350,135 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio, sampleBuffer.isValid else { return }
-        guard let mono = Self.monoSamples(from: sampleBuffer, sampleRate: &sampleRate), !mono.isEmpty else { return }
-        analyze(mono)
+        guard let (mono, rate) = Self.monoSamples(from: sampleBuffer), !mono.isEmpty else { return }
+        analyze(mono, sampleRate: rate)
     }
 
-    /// Mixes the buffer's channels down to mono Float32.
-    private static func monoSamples(from sampleBuffer: CMSampleBuffer, sampleRate: inout Double) -> [Float]? {
+    private enum SampleFormat {
+        case float32, int16, int32
+
+        var bytes: Int {
+            switch self {
+            case .float32, .int32: return 4
+            case .int16: return 2
+            }
+        }
+    }
+
+    /// Mixes the buffer down to mono Float32, whatever its layout: any sample rate, any channel count,
+    /// interleaved or not, Float32 / Int16 / Int32 linear PCM.
+    private static func monoSamples(from sampleBuffer: CMSampleBuffer) -> (samples: [Float], sampleRate: Double)? {
         guard let description = sampleBuffer.formatDescription,
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee,
-              asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0,
-              asbd.mBitsPerChannel == 32 else { return nil }
-        sampleRate = asbd.mSampleRate
+              asbd.mFormatID == kAudioFormatLinearPCM,
+              asbd.mSampleRate > 0 else { return nil }
+        let flags = asbd.mFormatFlags
+        guard flags & kAudioFormatFlagIsBigEndian == 0 else { return nil }
+
+        let format: SampleFormat
+        if flags & kAudioFormatFlagIsFloat != 0, asbd.mBitsPerChannel == 32 {
+            format = .float32
+        } else if flags & kAudioFormatFlagIsSignedInteger != 0, asbd.mBitsPerChannel == 16 {
+            format = .int16
+        } else if flags & kAudioFormatFlagIsSignedInteger != 0, asbd.mBitsPerChannel == 32 {
+            format = .int32
+        } else {
+            return nil
+        }
+        let nonInterleaved = flags & kAudioFormatFlagIsNonInterleaved != 0
+        let declaredChannels = max(Int(asbd.mChannelsPerFrame), 1)
 
         let frames = CMSampleBufferGetNumSamples(sampleBuffer)
         guard frames > 0 else { return nil }
         var mono = [Float](repeating: 0, count: frames)
-        let nonInterleaved = asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0
+        var scratch = [Float](repeating: 0, count: frames)
+        var mixed = 0
 
         do {
             try sampleBuffer.withAudioBufferList { buffers, _ in
                 mono.withUnsafeMutableBufferPointer { out in
-                    guard let outBase = out.baseAddress else { return }
-                    var channels = 0
-                    if nonInterleaved {
-                        for buffer in buffers {
-                            guard let data = buffer.mData else { continue }
-                            let count = min(frames, Int(buffer.mDataByteSize) / MemoryLayout<Float>.size)
-                            vDSP_vadd(data.assumingMemoryBound(to: Float.self), 1, outBase, 1, outBase, 1, vDSP_Length(count))
-                            channels += 1
+                    scratch.withUnsafeMutableBufferPointer { temp in
+                        guard let outBase = out.baseAddress, let tempBase = temp.baseAddress else { return }
+                        if nonInterleaved {
+                            // One buffer per channel.
+                            for buffer in buffers {
+                                guard let data = buffer.mData else { continue }
+                                let count = min(frames, Int(buffer.mDataByteSize) / format.bytes)
+                                accumulate(UnsafeRawPointer(data), stride: 1, count: count, format: format, into: outBase, scratch: tempBase)
+                                mixed += 1
+                            }
+                        } else if let buffer = buffers.first, let data = buffer.mData {
+                            // One buffer with the channels interleaved frame by frame.
+                            let channels = buffer.mNumberChannels > 0 ? Int(buffer.mNumberChannels) : declaredChannels
+                            let count = min(frames, Int(buffer.mDataByteSize) / (format.bytes * channels))
+                            for channel in 0..<channels {
+                                accumulate(UnsafeRawPointer(data) + channel * format.bytes, stride: channels, count: count, format: format, into: outBase, scratch: tempBase)
+                            }
+                            mixed = channels
                         }
-                    } else if let data = buffers.first?.mData {
-                        let stride = Int(asbd.mChannelsPerFrame)
-                        let samples = data.assumingMemoryBound(to: Float.self)
-                        for channel in 0..<stride {
-                            vDSP_vadd(samples + channel, vDSP_Stride(stride), outBase, 1, outBase, 1, vDSP_Length(frames))
-                        }
-                        channels = stride
-                    }
-                    if channels > 1 {
-                        var scale = 1 / Float(channels)
-                        vDSP_vsmul(outBase, 1, &scale, outBase, 1, vDSP_Length(frames))
                     }
                 }
             }
         } catch {
             return nil
         }
-        return mono
+        guard mixed > 0 else { return nil }
+        if mixed > 1 {
+            var scale = 1 / Float(mixed)
+            vDSP_vsmul(mono, 1, &scale, &mono, 1, vDSP_Length(frames))
+        }
+        return (mono, asbd.mSampleRate)
+    }
+
+    /// Adds one channel (every `stride`-th sample) into `out` as Float in -1…1.
+    private static func accumulate(_ data: UnsafeRawPointer, stride: Int, count: Int, format: SampleFormat, into out: UnsafeMutablePointer<Float>, scratch: UnsafeMutablePointer<Float>) {
+        let n = vDSP_Length(count)
+        let step = vDSP_Stride(stride)
+        switch format {
+        case .float32:
+            vDSP_vadd(data.assumingMemoryBound(to: Float.self), step, out, 1, out, 1, n)
+        case .int16:
+            vDSP_vflt16(data.assumingMemoryBound(to: Int16.self), step, scratch, 1, n)
+            var scale = Float(1) / 32_768
+            vDSP_vsma(scratch, 1, &scale, out, 1, out, 1, n)
+        case .int32:
+            vDSP_vflt32(data.assumingMemoryBound(to: Int32.self), step, scratch, 1, n)
+            var scale = Float(1) / 2_147_483_648
+            vDSP_vsma(scratch, 1, &scale, out, 1, out, 1, n)
+        }
     }
 
     // MARK: Analysis (sample queue)
 
-    private func analyze(_ mono: [Float]) {
-        let n = Self.fftSize
+    /// A 2048-point FFT (≈43 ms, ~23 Hz bins at 48 kHz), doubled above 64 kHz so high-rate devices keep
+    /// the same frequency resolution in the bass.
+    private func configureFFT() {
+        let newLog2n = vDSP_Length(sampleRate > 64_000 ? 12 : 11)
+        guard newLog2n != log2n else { return }
+        log2n = newLog2n
+        fftSize = 1 << Int(newLog2n)
+        window = vDSP.window(ofType: Float.self, usingSequence: .hanningDenormalized, count: fftSize, isHalfWindow: false)
+        windowed = [Float](repeating: 0, count: fftSize)
+        realp = [Float](repeating: 0, count: fftSize / 2)
+        imagp = [Float](repeating: 0, count: fftSize / 2)
+        power = [Float](repeating: 0, count: fftSize / 2)
+        ring.removeAll(keepingCapacity: true)
+    }
+
+    private func analyze(_ mono: [Float], sampleRate rate: Double) {
+        if rate != sampleRate {
+            sampleRate = rate
+            configureFFT()
+        }
+        let now = CACurrentMediaTime()
+        lastBufferTime = now
+
+        var rms: Float = 0
+        vDSP_rmsqv(mono, 1, &rms, vDSP_Length(mono.count))
+        updatePresence(levelDb: 20 * log10(max(Double(rms), 1e-9)), now: now)
+        updateLevelSource(now: now)
+
+        let n = fftSize
         // Sliding window over the most recent `n` samples; one FFT per delivered buffer.
         ring.append(contentsOf: mono)
         if ring.count > n { ring.removeFirst(ring.count - n) }
@@ -280,7 +492,7 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
                 windowed.withUnsafeBytes { raw in
                     vDSP_ctoz(raw.bindMemory(to: DSPComplex.self).baseAddress!, 2, &split, 1, vDSP_Length(n / 2))
                 }
-                vDSP_fft_zrip(fftSetup, &split, 1, Self.log2n, FFTDirection(FFT_FORWARD))
+                vDSP_fft_zrip(fftSetup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
                 power.withUnsafeMutableBufferPointer { powerPtr in
                     vDSP_zvmags(&split, 1, powerPtr.baseAddress!, 1, vDSP_Length(n / 2))
                 }
@@ -300,13 +512,16 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
 
         bassEnvelope = Self.envelope(bassEnvelope, target: bassLevel, dt: dt, attack: 0.012, release: 0.16)
         vocalEnvelope = Self.envelope(vocalEnvelope, target: vocalLevel, dt: dt, attack: 0.03, release: 0.35)
-        state.audioLevels.update(bass: bassEnvelope, vocal: vocalEnvelope)
+        // The FFT keeps running under Cloud Sync (to notice audio coming back) but only publishes when live.
+        if levelSource != .cloudSync {
+            state.audioLevels.update(bass: bassEnvelope, vocal: vocalEnvelope)
+        }
     }
 
     /// Combined linear amplitude of the bins covering `band` (a full-scale sine reads ≈ 1).
     private func bandAmplitude(_ band: ClosedRange<Double>) -> Double {
-        let half = Self.fftSize / 2
-        let binHz = sampleRate / Double(Self.fftSize)
+        let half = fftSize / 2
+        let binHz = sampleRate / Double(fftSize)
         // Bin 0 holds DC (and zrip packs Nyquist into imagp[0]), so start at bin 1.
         let lo = max(1, Int(band.lowerBound / binHz))
         let hi = min(half - 1, Int((band.upperBound / binHz).rounded(.up)))
@@ -316,7 +531,7 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
             vDSP_sve(p.baseAddress! + lo, 1, &sum, vDSP_Length(hi - lo + 1))
         }
         // zrip output is 2× the DFT and the Hann window halves amplitude: amplitude = |X| · 2 / N.
-        return sqrt(Double(sum)) * 2 / Double(Self.fftSize)
+        return sqrt(Double(sum)) * 2 / Double(fftSize)
     }
 
     // MARK: Auto-gain
@@ -348,7 +563,96 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         vocalEnvelope = 0
         bassPeak.reset()
         vocalPeak.reset()
-        state.audioLevels.update(bass: 0, vocal: 0)
+        setAudioPresent(false)
+        updateLevelSource(now: CACurrentMediaTime())
+        if levelSource != .cloudSync {
+            state.audioLevels.update(bass: 0, vocal: 0)
+        }
+    }
+
+    // MARK: Live ↔ Cloud Sync (sample queue)
+
+    /// Audio counts as present the instant it rises above -68 dBFS, and as gone after 1.5 s below
+    /// -72 dBFS; the gap between the two thresholds is hysteresis.
+    private func updatePresence(levelDb: Double, now: CFTimeInterval) {
+        if levelDb > Self.presenceDb {
+            silentSince = nil
+            setAudioPresent(true)
+        } else if levelDb < Self.silenceDb {
+            let since = silentSince ?? now
+            silentSince = since
+            if now - since >= Self.silenceHold { setAudioPresent(false) }
+        } else {
+            silentSince = nil
+        }
+    }
+
+    private func setAudioPresent(_ present: Bool) {
+        guard present != audioPresent else { return }
+        audioPresent = present
+        if !present { silentSince = nil }
+        DispatchQueue.main.async { [state] in
+            if state.systemAudioActive != present { state.systemAudioActive = present }
+        }
+    }
+
+    /// Live FFT while the Mac is making sound; Cloud Sync once a native player has reported playback for
+    /// 1.5 s with the Mac silent (or capture unavailable); otherwise the (silent) live FFT if capture runs.
+    private func updateLevelSource(now: CFTimeInterval) {
+        let nativePlaying = state.cloudSync.nativePlaybackActive
+        if !nativePlaying {
+            nativePlayingSince = nil
+        } else if nativePlayingSince == nil {
+            nativePlayingSince = now
+        }
+        let source: LevelSource
+        if audioPresent {
+            source = .live
+        } else if let since = nativePlayingSince, now - since >= Self.silenceHold {
+            source = .cloudSync
+        } else {
+            source = captureRunning ? .live : .none
+        }
+        guard source != levelSource else { return }
+        let wasCloud = levelSource == .cloudSync
+        levelSource = source
+        if source == .cloudSync {
+            lastSynthTime = nil
+            scheduleTicker(interval: 1.0 / 120)
+        } else if wasCloud {
+            scheduleTicker(interval: 0.25)
+        }
+        DispatchQueue.main.async { [state] in
+            if state.levelSource != source { state.levelSource = source }
+        }
+    }
+
+    /// Watchdog (4 Hz) and, under Cloud Sync, the 120 Hz synthesizer clock.
+    private func startTicker() {
+        let timer = DispatchSource.makeTimerSource(queue: sampleQueue)
+        timer.setEventHandler { [weak self] in self?.tick() }
+        ticker = timer
+        scheduleTicker(interval: 0.25)
+        timer.resume()
+    }
+
+    private func scheduleTicker(interval: Double) {
+        ticker?.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(interval < 0.05 ? 1 : 50))
+    }
+
+    private func tick() {
+        let now = CACurrentMediaTime()
+        // No buffers at all (capture off, or ScreenCaptureKit stalled) is silence too.
+        if audioPresent, !captureRunning || now - lastBufferTime > Self.silenceHold {
+            setAudioPresent(false)
+        }
+        updateLevelSource(now: now)
+        guard levelSource == .cloudSync else { return }
+        let dt = lastSynthTime.map { now - $0 } ?? 0
+        lastSynthTime = now
+        let trackTime = state.playbackClock.currentTrackTime(at: now)
+        let levels = state.cloudSync.levels(at: trackTime, dt: dt)
+        state.audioLevels.update(bass: levels.bass, vocal: levels.vocal)
     }
 }
 

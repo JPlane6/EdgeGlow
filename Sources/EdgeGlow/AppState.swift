@@ -101,7 +101,7 @@ struct DisplayInfo: Identifiable, Equatable {
     let isBuiltIn: Bool
 }
 
-/// Single source of truth shared by the Spotify bridge, the overlay renderer and the popover UI.
+/// Single source of truth shared by the media bridge, the audio pipeline, the overlay renderer and the popover UI.
 final class AppState: ObservableObject {
     static let shared = AppState()
 
@@ -125,25 +125,31 @@ final class AppState: ObservableObject {
         static let legacySelectedDisplayID = "selectedDisplayID"
     }
 
-    // MARK: Playback (driven by SpotifyBridge)
+    // MARK: Playback (driven by MediaBridge)
 
     @Published var playback: PlaybackState = .stopped
-    @Published var spotifyRunning = false
+    /// The player (or plain system audio) the glow is following; nil when nothing is playing or paused.
+    @Published var mediaSource: MediaSource?
     @Published var trackName = ""
     @Published var artistName = ""
     @Published var artwork: NSImage?
-    @Published var automationDenied = false
+    /// Apps that denied EdgeGlow Automation access, by name.
+    @Published var automationDeniedApps: [String] = []
     @Published var extractedPrimary = RGBColor.neonCyan
     @Published var extractedSecondary = RGBColor.neonMagenta
 
-    /// Track position (seconds) sampled from Spotify, and when it was sampled. Updated on every poll,
-    /// so deliberately not @Published.
-    var positionAnchor: Double = 0
-    var anchorDate = Date()
+    /// Continuous track position for the current native player. Read at audio rate, so not @Published.
+    let playbackClock = PlaybackClock()
+    /// Tempo and lyric timing for the current track, used when the Mac itself is silent.
+    let cloudSync = CloudSyncEngine()
 
-    // MARK: System audio (driven by AudioCaptureManager)
+    // MARK: Audio (driven by AudioCaptureManager)
 
     @Published var audioStatus: AudioCaptureStatus = .off
+    /// Sound above -68 dBFS is coming out of the Mac; false after 1.5 s of digital silence.
+    @Published var systemAudioActive = false
+    /// What is currently feeding `audioLevels`.
+    @Published var levelSource: LevelSource = .none
     /// Bass/vocal energies; read by the renderer every frame, so not @Published.
     let audioLevels = AudioLevels()
 
@@ -220,17 +226,13 @@ final class AppState: ObservableObject {
 
     var isPlaying: Bool { playback == .playing }
 
-    /// Live audio is driving the glow (Spotify playing and system audio capture running).
-    var audioReactive: Bool { isPlaying && audioStatus == .live }
+    /// Audio energies are driving the glow: something is playing and either the live FFT or Cloud Sync
+    /// is producing levels.
+    var audioReactive: Bool { isPlaying && levelSource != .none }
 
     /// Whether the overlay should currently be lit at all.
     var glowActive: Bool { isPlaying || idleWhenPaused }
 
     var targetPrimary: RGBColor { useCustomColors ? customPrimary : extractedPrimary }
     var targetSecondary: RGBColor { useCustomColors ? customSecondary : extractedSecondary }
-
-    /// Extrapolated playback position used for beat phase.
-    func playbackPosition(at date: Date) -> Double {
-        isPlaying ? positionAnchor + date.timeIntervalSince(anchorDate) : positionAnchor
-    }
 }

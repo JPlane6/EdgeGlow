@@ -6,7 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
     private var overlays: OverlayWindowManager?
-    private var spotify: SpotifyBridge?
+    private var media: MediaBridge?
     private var audio: AudioCaptureManager?
     private var outsideClickMonitor: Any?
 
@@ -18,9 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setUpPopover()
         setUpStatusItem()
 
-        let spotify = SpotifyBridge(state: state)
-        spotify.start()
-        self.spotify = spotify
+        let media = MediaBridge(state: state)
+        media.start()
+        self.media = media
 
         let audio = AudioCaptureManager(state: state)
         audio.start()
@@ -28,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        spotify?.stop()
+        media?.stop()
         audio?.stop()
     }
 

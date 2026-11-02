@@ -9,7 +9,7 @@ struct MenuBarPopoverView: View {
         VStack(alignment: .leading, spacing: 14) {
             header
             nowPlayingCard
-            if state.automationDenied {
+            if !state.automationDeniedApps.isEmpty {
                 permissionBanner
             }
             if state.audioStatus == .permissionNeeded {
@@ -76,33 +76,43 @@ struct MenuBarPopoverView: View {
         }
     }
 
-    /// Live bass/vocal meter while audio is flowing, otherwise the capture status.
+    /// Bass/vocal meter while levels are flowing (LIVE from the system audio FFT, SYNC from Cloud Sync),
+    /// otherwise the capture status.
     @ViewBuilder
     private var audioBadge: some View {
-        switch state.audioStatus {
-        case .live:
-            // Levels aren't @Published (they update at audio rate), so poll them while the popover is shown.
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
-                let levels = state.audioLevels.snapshot()
-                HStack(spacing: 4) {
-                    levelBar(levels.bass, color: state.targetPrimary.color)
-                    levelBar(levels.vocal, color: state.targetSecondary.color)
-                    Text("LIVE")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
-                        .tracking(0.5)
-                }
+        if state.levelSource == .cloudSync {
+            meterBadge("SYNC")
+                .help("The music is playing on another speaker, so the glow follows the track's tempo and synced lyrics")
+        } else {
+            switch state.audioStatus {
+            case .live:
+                meterBadge("LIVE")
+                    .help("Bass (20–150 Hz) and vocals (300–3000 Hz) from system audio")
+            case .starting:
+                badgeLabel("waveform", "Starting…", color: .secondary)
+            case .off:
+                badgeLabel("waveform", "Audio Off", color: .secondary)
+                    .help("System audio capture runs while the glow is on for at least one display")
+            case .permissionNeeded:
+                badgeLabel("exclamationmark.triangle.fill", "No Access", color: .yellow)
+            case .failed(let message):
+                badgeLabel("exclamationmark.triangle.fill", "Audio Error", color: .orange)
+                    .help(message)
             }
-            .help("Bass (20–150 Hz) and vocals (300–3000 Hz) from system audio")
-        case .starting:
-            badgeLabel("waveform", "Starting…", color: .secondary)
-        case .off:
-            badgeLabel("waveform", "Audio Off", color: .secondary)
-                .help("System audio capture runs while Spotify is playing")
-        case .permissionNeeded:
-            badgeLabel("exclamationmark.triangle.fill", "No Access", color: .yellow)
-        case .failed(let message):
-            badgeLabel("exclamationmark.triangle.fill", "Audio Error", color: .orange)
-                .help(message)
+        }
+    }
+
+    private func meterBadge(_ label: String) -> some View {
+        // Levels aren't @Published (they update at audio rate), so poll them while the popover is shown.
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
+            let levels = state.audioLevels.snapshot()
+            HStack(spacing: 4) {
+                levelBar(levels.bass, color: state.targetPrimary.color)
+                levelBar(levels.vocal, color: state.targetSecondary.color)
+                Text(label)
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .tracking(0.5)
+            }
         }
     }
 
@@ -139,7 +149,7 @@ struct MenuBarPopoverView: View {
         switch state.playback {
         case .playing: return "Live"
         case .paused: return "Paused"
-        case .stopped: return state.spotifyRunning ? "Idle" : "No Spotify"
+        case .stopped: return "Idle"
         }
     }
 
@@ -170,13 +180,23 @@ struct MenuBarPopoverView: View {
             .shadow(color: state.targetPrimary.color.opacity(0.35), radius: 8)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(hasTrack ? state.trackName : "Nothing playing")
+                Text(nowPlayingTitle)
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
-                Text(hasTrack ? state.artistName : (state.spotifyRunning ? "Press play in Spotify" : "Open Spotify to sync the glow"))
+                Text(nowPlayingSubtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if let source = state.mediaSource {
+                    HStack(spacing: 4) {
+                        Image(systemName: source.symbol)
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(state.levelSource == .cloudSync ? "\(source.displayName) · Cloud Sync" : source.displayName)
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundStyle(state.targetPrimary.color.opacity(0.9))
+                    .lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -187,12 +207,29 @@ struct MenuBarPopoverView: View {
         state.playback != .stopped && !state.trackName.isEmpty
     }
 
+    private var nowPlayingTitle: String {
+        if hasTrack { return state.trackName }
+        return state.mediaSource == .systemAudio ? "Listening to system audio" : "Nothing playing"
+    }
+
+    private var nowPlayingSubtitle: String {
+        if hasTrack { return state.artistName.isEmpty ? (state.mediaSource?.displayName ?? "") : state.artistName }
+        if state.mediaSource == .systemAudio { return "Any app's sound drives the glow" }
+        return "Play music in Spotify, Apple Music or any app"
+    }
+
+    private var deniedAppsList: String {
+        let apps = state.automationDeniedApps
+        guard apps.count > 1 else { return apps.first ?? "" }
+        return apps.dropLast().joined(separator: ", ") + " and " + apps[apps.count - 1]
+    }
+
     private var permissionBanner: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.yellow)
             VStack(alignment: .leading, spacing: 6) {
-                Text("EdgeGlow can't read Spotify. Allow it under Privacy & Security → Automation.")
+                Text("EdgeGlow can't read \(deniedAppsList). Allow it under Privacy & Security → Automation.")
                     .font(.system(size: 11))
                     .fixedSize(horizontal: false, vertical: true)
                 Button("Open Automation Settings") {
@@ -481,7 +518,7 @@ struct MenuBarPopoverView: View {
 
     private var footer: some View {
         HStack {
-            Text("Spotify colors · live system audio")
+            Text(footerText)
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
             Spacer()
@@ -496,6 +533,16 @@ struct MenuBarPopoverView: View {
             .keyboardShortcut("q")
         }
         .padding(.horizontal, 2)
+    }
+
+    /// Where the colors and the motion currently come from.
+    private var footerText: String {
+        let source = state.mediaSource?.displayName ?? "Album colors"
+        switch state.levelSource {
+        case .cloudSync: return "\(source) · cloud sync"
+        case .live: return "\(source) · live audio"
+        case .none: return source
+        }
     }
 
     private func sectionTitle(_ text: String) -> some View {
