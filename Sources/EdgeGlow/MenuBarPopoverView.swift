@@ -15,15 +15,23 @@ struct MenuBarPopoverView: View {
             if state.audioStatus == .permissionNeeded {
                 audioPermissionBanner
             }
-            colorsCard
-            styleCard
-            displaysCard
-            slidersCard
+            // The settings cards scroll so the popover never grows taller than the screen and pushes the
+            // header up under the menu bar. The header, now playing, toggles and footer stay pinned.
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 14) {
+                    colorsCard
+                    styleCard
+                    displaysCard
+                    slidersCard
+                }
+            }
+            .scrollBounceBehavior(.basedOnSize)
             togglesCard
             footer
         }
         .padding(16)
         .frame(width: 340)
+        .frame(maxHeight: 650)
         .background(
             LinearGradient(
                 colors: [Color(white: 0.11), Color(white: 0.07)],
