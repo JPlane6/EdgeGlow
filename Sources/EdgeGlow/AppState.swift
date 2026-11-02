@@ -46,6 +46,33 @@ enum PlaybackState: Equatable {
     case stopped
 }
 
+enum AnimationStyle: String, CaseIterable, Identifiable {
+    /// Rotating dual-color rim with a beat-locked kick pulse (the original look).
+    case breathing
+    /// Comet-tail gradient racing around the perimeter, top → right → bottom → left, at a BPM-driven speed.
+    case chasing
+    /// Fixed gradient, no motion or pulse; only fades and color crossfades.
+    case solid
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .breathing: return "Breathing"
+        case .chasing: return "Chasing"
+        case .solid: return "Solid"
+        }
+    }
+}
+
+/// A connected display as shown in the popover's display picker.
+struct DisplayInfo: Identifiable, Equatable {
+    /// Stable per-monitor identifier (display UUID), so the choice survives reboots and replugging.
+    let id: String
+    let name: String
+    let isBuiltIn: Bool
+}
+
 /// Single source of truth shared by the Spotify bridge, the overlay renderer and the popover UI.
 final class AppState: ObservableObject {
     static let shared = AppState()
@@ -64,6 +91,8 @@ final class AppState: ObservableObject {
         static let notchGlowEnabled = "notchGlowEnabled"
         static let customPrimary = "customPrimary"
         static let customSecondary = "customSecondary"
+        static let animationStyle = "animationStyle"
+        static let selectedDisplayID = "selectedDisplayID"
     }
 
     // MARK: Playback (driven by SpotifyBridge)
@@ -88,6 +117,10 @@ final class AppState: ObservableObject {
 
     @Published var hasNotch = false
     @Published var notchSize = CGSize(width: 190, height: 32)
+    @Published var availableDisplays: [DisplayInfo] = []
+    /// The display the overlay is actually on. Differs from `selectedDisplayID` while the chosen
+    /// monitor is unplugged and the overlay has fallen back to the main screen.
+    @Published var activeDisplayID: String?
 
     // MARK: Persisted settings
 
@@ -100,6 +133,10 @@ final class AppState: ObservableObject {
     @Published var notchGlowEnabled: Bool { didSet { defaults.set(notchGlowEnabled, forKey: Key.notchGlowEnabled) } }
     @Published var customPrimary: RGBColor { didSet { defaults.set(customPrimary.array, forKey: Key.customPrimary) } }
     @Published var customSecondary: RGBColor { didSet { defaults.set(customSecondary.array, forKey: Key.customSecondary) } }
+    @Published var animationStyle: AnimationStyle { didSet { defaults.set(animationStyle.rawValue, forKey: Key.animationStyle) } }
+    /// User's chosen display; nil means "main screen". Kept while that display is disconnected so the
+    /// overlay returns to it when it is plugged back in.
+    @Published var selectedDisplayID: String? { didSet { defaults.set(selectedDisplayID, forKey: Key.selectedDisplayID) } }
 
     private init() {
         defaults.register(defaults: [
@@ -120,6 +157,8 @@ final class AppState: ObservableObject {
         notchGlowEnabled = defaults.bool(forKey: Key.notchGlowEnabled)
         customPrimary = RGBColor(array: defaults.array(forKey: Key.customPrimary) as? [Double]) ?? .neonCyan
         customSecondary = RGBColor(array: defaults.array(forKey: Key.customSecondary) as? [Double]) ?? .neonMagenta
+        animationStyle = AnimationStyle(rawValue: defaults.string(forKey: Key.animationStyle) ?? "") ?? .breathing
+        selectedDisplayID = defaults.string(forKey: Key.selectedDisplayID)
     }
 
     // MARK: Derived values

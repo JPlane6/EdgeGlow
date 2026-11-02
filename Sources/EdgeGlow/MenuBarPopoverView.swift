@@ -13,6 +13,7 @@ struct MenuBarPopoverView: View {
                 permissionBanner
             }
             colorsCard
+            styleCard
             slidersCard
             togglesCard
             footer
@@ -203,6 +204,64 @@ struct MenuBarPopoverView: View {
         Binding(
             get: { state[keyPath: keyPath].color },
             set: { state[keyPath: keyPath] = RGBColor($0) }
+        )
+    }
+
+    // MARK: Animation + display
+
+    private var styleCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Animation Style")
+            Picker("Animation Style", selection: $state.animationStyle) {
+                ForEach(AnimationStyle.allCases) { style in
+                    Text(style.title).tag(style)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            HStack(spacing: 8) {
+                Image(systemName: activeDisplay?.isBuiltIn == false ? "display" : "laptopcomputer")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                Text("Display")
+                    .font(.system(size: 12))
+                Spacer()
+                Picker("Display", selection: displayBinding) {
+                    ForEach(state.availableDisplays) { display in
+                        Text(display.name).tag(display.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
+                .disabled(state.availableDisplays.count < 2)
+            }
+            if displayFallbackActive {
+                Text("Selected display is disconnected. Showing on the main display until it's back.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .card()
+    }
+
+    private var activeDisplay: DisplayInfo? {
+        state.availableDisplays.first { $0.id == state.activeDisplayID }
+    }
+
+    private var displayFallbackActive: Bool {
+        guard let selected = state.selectedDisplayID else { return false }
+        return !state.availableDisplays.contains { $0.id == selected }
+    }
+
+    /// Shows the display actually in use (which is the main screen during a fallback) and saves the user's pick.
+    private var displayBinding: Binding<String> {
+        Binding(
+            get: { state.activeDisplayID ?? state.availableDisplays.first?.id ?? "" },
+            set: { state.selectedDisplayID = $0 }
         )
     }
 
