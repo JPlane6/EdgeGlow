@@ -1,8 +1,9 @@
+import AppKit
 import SwiftUI
 
 /// Full-screen liquid rim that hugs the display bezel, pulsing with the bass and chasing with the vocals.
 // Note: avoids @State on purpose. In the macOS 27 SDK @State is a macro, and the Command Line Tools
-// ship without the SwiftUI macro plugin, so the renderer is injected by OverlayController instead.
+// ship without the SwiftUI macro plugin, so the renderer is injected by OverlayWindowManager instead.
 struct GlowOverlayView: View {
     @ObservedObject var state: AppState
     @ObservedObject var renderer: GlowRenderer
@@ -30,10 +31,24 @@ struct GlowOverlayView: View {
     }
 }
 
-/// Per-frame render state. Only `animating` is published; everything else is mutated from inside the
-/// Canvas closure every frame and must not trigger view updates.
+/// Per-frame render state for one display. Only `animating` is published; everything else is mutated
+/// from inside the Canvas closure every frame and must not trigger view updates.
 final class GlowRenderer: ObservableObject {
     @Published var animating = true
+
+    /// The display this renderer draws on. Its notch (if any) shapes the bezel path; set by
+    /// OverlayWindowManager on creation and whenever screen parameters change.
+    var screen: NSScreen? {
+        didSet {
+            let newNotch = Self.notchRect(on: screen)
+            if newNotch != notch {
+                notch = newNotch
+                geometrySize = .zero
+            }
+        }
+    }
+
+    private var notch: CGRect?
 
     private var lastDate: Date?
     private var angle = 0.0
@@ -41,14 +56,19 @@ final class GlowRenderer: ObservableObject {
     private var presence = 0.0
     private var primary = RGBColor.neonCyan
     private var secondary = RGBColor.neonMagenta
-    /// Chasing style: comet head position along the perimeter (0…1, clockwise from top-center) and its
-    /// smoothed speed in laps per second.
+    /// Chasing style: leading comet head position along the perimeter (0…1, clockwise from top-center)
+    /// and its smoothed speed in laps per second. Symmetry reuses the same vocal-driven speed.
     private var chasePosition = 0.0
     private var chaseRate = 0.0
+    /// Symmetry style: progress of the current mirrored pair, in perimeter fractions. 0 = spawning at
+    /// top-center, 0.5 = heads meet at bottom-center, up to 0.5 + comet length while the tails drain.
+    private var symmetryProgress = 0.0
 
     /// Chasing speeds in laps per second: the glide with no vocals, and the extra speed at full vocal energy.
     private static let chaseGlideRate = 1.0 / 12.0
     private static let chaseVocalBoost = 0.6
+    /// Symmetry comets travel this much faster than the chase comets (each only covers half a lap).
+    private static let symmetrySpeed = 1.25
 
     // MARK: Kinetic physics state
 
@@ -80,11 +100,16 @@ final class GlowRenderer: ObservableObject {
     private static let sparkLinkDistance = 130.0
 
     private var nodes: [EdgeNode] = []
-    private var nodesSize = CGSize.zero
+    /// Dense rest samples of the bezel (every few points), used to draw the bent string so that tight
+    /// curves like the notch keep their exact shape while the nodes are displaced.
+    private var samples: [OutlineSample] = []
+    private var geometrySize = CGSize.zero
+    /// The notch the current geometry was built with (nil if none, or if it didn't fit the canvas).
+    private var geometryNotch: CGRect?
     /// Inward displacement (pt) and velocity (pt/s) of each node.
     private var displacement = [Double](repeating: 0, count: nodeCount)
     private var displacementVelocity = [Double](repeating: 0, count: nodeCount)
-    /// False once the string has settled; the original RoundedRectangle paths are drawn while asleep.
+    /// False once the string has settled; the exact analytic bezel paths are drawn while asleep.
     private var stringAwake = false
     private var sparks: [Spark] = []
     // Transient detection: slow-moving averages to compare the live envelopes against, plus cooldowns.
@@ -102,6 +127,7 @@ final class GlowRenderer: ObservableObject {
         // Frame-rate independent exponential smoothing.
         func approach(_ rate: Double) -> Double { 1 - exp(-dt * rate) }
 
+        let style = state.animationStyle
         let playing = state.isPlaying
         let targetPresence = playing ? 1.0 : (state.idleWhenPaused ? 0.55 : 0.0)
         presence += (targetPresence - presence) * approach(2.5)
@@ -129,8 +155,8 @@ final class GlowRenderer: ObservableObject {
         // Light smoothing turns ~50 Hz audio updates into a fluid 60 fps pulse without dulling the kick.
         pulse += (rawPulse - pulse) * approach(30)
 
-        // Vocal velocity: the comet glides when there's no singing and surges on dense vocals. Speeding up
-        // reacts quickly, slowing down eases off, and integrating dt means the comet never jumps.
+        // Vocal velocity: the comets glide when there's no singing and surge on dense vocals. Speeding up
+        // reacts quickly, slowing down eases off, and integrating dt means the comets never jump.
         let targetChaseRate: Double
         if audioReactive {
             targetChaseRate = Self.chaseGlideRate + Self.chaseVocalBoost * pow(levels.vocal, 1.5)
@@ -140,11 +166,22 @@ final class GlowRenderer: ObservableObject {
         chaseRate += (targetChaseRate - chaseRate) * approach(targetChaseRate > chaseRate ? 6 : 1.2)
         chasePosition = (chasePosition + dt * chaseRate).truncatingRemainder(dividingBy: 1)
 
+        // Symmetry: one mirrored pair per pass. The next pair spawns once the previous one has fully
+        // drained into the bottom-center merge point.
+        let passLength = 0.5 + state.cometLength
+        let previousProgress = symmetryProgress
+        symmetryProgress += dt * chaseRate * Self.symmetrySpeed
+        let merged = style == .symmetry && previousProgress < 0.5 && symmetryProgress >= 0.5
+        if symmetryProgress >= passLength {
+            symmetryProgress = (symmetryProgress - passLength).truncatingRemainder(dividingBy: passLength)
+        }
+
         let bounds = CGRect(origin: .zero, size: size)
-        prepareNodes(for: size)
+        prepareGeometry(for: size)
         // Physics keeps stepping even while faded out, so ripples and sparks always settle cleanly.
-        let kinetic = state.kineticEffects && state.animationStyle != .solid
-        updateKinetics(dt: dt, levels: levels, spawning: audioReactive && kinetic, bounds: bounds, state: state)
+        // Sparks Only *is* the kinetic effect, so it ignores the toggle.
+        let kinetic = state.kineticEffects || style == .sparksOnly
+        updateKinetics(dt: dt, levels: levels, spawning: audioReactive && kinetic, merged: merged, state: state)
 
         guard presence > 0.002 else { return }
 
@@ -159,24 +196,38 @@ final class GlowRenderer: ObservableObject {
             shaken.translateBy(x: amplitude * sin(t * 83), y: amplitude * cos(t * 71))
         }
 
-        switch state.animationStyle {
+        switch style {
         case .breathing:
             // Bass blooms the blur slightly on each kick (≈1× spread at a typical average bass level).
             drawRim(in: shaken, bounds: bounds, angle: angle, beat: beat, bloom: 0.9 + 0.3 * beat, opacity: opacity, aberration: aberration, state: state)
         case .chasing:
-            drawChase(in: shaken, bounds: bounds, beat: beat, opacity: opacity, aberration: aberration, state: state)
-        case .solid:
-            drawRim(in: context, bounds: bounds, angle: -.pi / 2, beat: 0, bloom: 1, opacity: opacity, aberration: 0, state: state)
+            let comets = [
+                Comet(head: chasePosition, direction: 1, clip: nil),
+                Comet(head: chasePosition + 0.5, direction: 1, clip: nil),
+            ]
+            drawComets(comets, in: shaken, bounds: bounds, beat: beat, opacity: opacity, aberration: aberration, state: state)
+        case .symmetry:
+            // Right comet runs clockwise over the first half of the perimeter, the left one mirrors it
+            // counter-clockwise over the second half; both are clipped at bottom-center so they drain
+            // into the merge point instead of passing each other.
+            let p = symmetryProgress
+            let comets = [
+                Comet(head: p, direction: 1, clip: 0...0.5),
+                Comet(head: 1 - p, direction: -1, clip: 0.5...1),
+            ]
+            drawComets(comets, in: shaken, bounds: bounds, beat: beat, opacity: opacity, aberration: aberration, state: state)
+            drawMergeGlow(in: shaken, bounds: bounds, beat: beat, opacity: opacity, state: state)
+        case .sparksOnly:
+            // No rim: the dark bezel is only revealed by the sparks it throws.
+            break
         }
 
         drawSparks(in: context, opacity: opacity)
-
-        if state.notchGlowEnabled {
-            drawNotchGlow(in: context, size: size, state: state, beat: state.animationStyle == .solid ? 0 : beat, opacity: opacity)
-        }
     }
 
-    /// The original two-layer rim (breathing style, and solid with a fixed angle and no beat).
+    // MARK: Breathing
+
+    /// The original two-layer rim with a rotating conic gradient.
     private func drawRim(in context: GraphicsContext, bounds: CGRect, angle: Double, beat: Double, bloom: Double, opacity: Double, aberration: Double, state: AppState) {
         let gradient = Gradient(colors: [primary.color, secondary.color, primary.color, secondary.color, primary.color])
         let shading = GraphicsContext.Shading.conicGradient(
@@ -200,69 +251,146 @@ final class GlowRenderer: ObservableObject {
         rim.opacity = min(1, opacity * (0.85 + 0.3 * beat)) * (1 - 0.45 * aberration)
         rim.stroke(rimPath, with: shading, lineWidth: rimWidth)
 
-        drawChromaticSplit(in: context, bounds: bounds, shading: shading, inset: rimWidth * 0.25, lineWidth: rimWidth, amount: aberration, opacity: opacity)
+        drawChromaticSplit(in: context, inset: rimWidth * 0.25, amount: aberration, opacity: opacity) { layer, inset in
+            layer.stroke(self.edgePath(in: bounds, inset: inset), with: shading, lineWidth: rimWidth * 0.8)
+        }
     }
 
-    /// Two comets on opposite sides of the screen racing clockwise around the bezel, over a faint
-    /// base ring so the edges never go fully dark. Uses the same ambient + crisp core layering as the rim.
-    private func drawChase(in context: GraphicsContext, bounds: CGRect, beat: Double, opacity: Double, aberration: Double, state: AppState) {
-        let center = CGPoint(x: bounds.midX, y: bounds.midY)
-        let headAngle = chaseHeadAngle(in: bounds)
+    // MARK: Comets (Chasing, Symmetry)
 
-        // Gradient locations increase clockwise from the seam. Each half holds one comet: dark ahead of
-        // the head, then a tail brightening from the secondary color into a white-hot primary head that
-        // ends on a sharp leading edge at the seam (location 0.5 / 1.0).
-        let headColor = primary.lerp(to: RGBColor(r: 1, g: 1, b: 1), t: 0.35).color
-        var stops: [Gradient.Stop] = []
-        for offset in [0.0, 0.5] {
-            stops += [
-                Gradient.Stop(color: secondary.color.opacity(0), location: offset),
-                Gradient.Stop(color: secondary.color.opacity(0), location: offset + 0.22),
-                Gradient.Stop(color: secondary.color.opacity(0.4), location: offset + 0.36),
-                Gradient.Stop(color: primary.color.opacity(0.9), location: offset + 0.47),
-                Gradient.Stop(color: headColor, location: offset + 0.4995),
-            ]
-        }
-        let cometShading = GraphicsContext.Shading.conicGradient(Gradient(stops: stops), center: center, angle: .radians(headAngle))
-        let baseShading = GraphicsContext.Shading.conicGradient(
-            Gradient(colors: [primary.color, secondary.color, primary.color, secondary.color, primary.color]),
-            center: center,
-            angle: .radians(headAngle)
-        )
+    /// One comet of light on the bezel. Positions are perimeter fractions clockwise from top-center and
+    /// may exceed 0…1 (they wrap) unless the comet is clipped.
+    private struct Comet {
+        var head: Double
+        /// +1 travels clockwise, -1 counter-clockwise; the tail trails behind the head.
+        var direction: Double
+        /// Keeps the comet on one stretch of the perimeter (Symmetry's halves). Nil wraps freely.
+        var clip: ClosedRange<Double>?
+    }
+
+    /// Each comet is drawn as a stack of overlapping trims that all share the head and reach
+    /// progressively further back, so brightness ramps smoothly from the head into the tail.
+    private static let cometLayerCount = 12
+    /// Per-layer alpha (index 0 = shortest, at the head) chosen so the stacked result follows
+    /// brightness(x) = (1 - x)^1.6 along the comet, x = 0 at the head and 1 at the tail end.
+    private static let cometLayerAlphas: [Double] = {
+        let n = cometLayerCount
+        let brightness = (0...n).map { j in j == n ? 0 : pow(1 - Double(j) / Double(n), 1.6) }
+        return (0..<n).map { j in 1 - (1 - brightness[j]) / (1 - brightness[j + 1]) }
+    }()
+
+    private var cometHeadColor: RGBColor { primary.lerp(to: .white, t: 0.35) }
+
+    /// Color at fraction `t` along a comet: white-hot head, primary body, secondary tail.
+    private func cometColor(at t: Double) -> RGBColor {
+        t < 0.3 ? cometHeadColor.lerp(to: primary, t: t / 0.3) : primary.lerp(to: secondary, t: (t - 0.3) / 0.7)
+    }
+
+    /// Comets over an otherwise dark bezel, with the same ambient spill + crisp core layering as the rim.
+    /// Vocals set their speed (upstream); the bass owns their body: thickness, brightness and bloom.
+    private func drawComets(_ comets: [Comet], in context: GraphicsContext, bounds: CGRect, beat: Double, opacity: Double, aberration: Double, state: AppState) {
+        let length = state.cometLength
 
         let ambientPath = edgePath(in: bounds, inset: 0)
-
-        var base = context
-        base.addFilter(.blur(radius: state.glowSpread))
-        base.opacity = opacity * 0.25
-        base.stroke(ambientPath, with: baseShading, lineWidth: state.thickness * 0.75)
-
-        // Bass owns the comet's body: thickness, brightness and bloom all swell on the kick.
         var ambient = context
         ambient.addFilter(.blur(radius: state.glowSpread * (0.8 + 0.45 * beat)))
         ambient.opacity = opacity * (0.7 + 0.3 * min(beat, 1))
-        ambient.stroke(ambientPath, with: cometShading, lineWidth: state.thickness * (0.85 + 0.55 * beat))
+        ambient.drawLayer { layer in
+            self.strokeComets(comets, along: ambientPath, length: length, lineWidth: state.thickness * (0.85 + 0.55 * beat), into: &layer)
+        }
 
         let rimWidth = max(4, state.thickness * 0.22) * (1 + 0.25 * beat)
         let rimPath = edgePath(in: bounds, inset: rimWidth * 0.25)
         var rim = context
         rim.addFilter(.blur(radius: 8 * (1 + 0.5 * beat)))
         rim.opacity = min(1, opacity * (0.75 + 0.4 * beat)) * (1 - 0.45 * aberration)
-        rim.stroke(rimPath, with: cometShading, lineWidth: rimWidth)
+        rim.drawLayer { layer in
+            self.strokeComets(comets, along: rimPath, length: length, lineWidth: rimWidth, into: &layer)
+        }
 
-        drawChromaticSplit(in: context, bounds: bounds, shading: cometShading, inset: rimWidth * 0.25, lineWidth: rimWidth, amount: aberration, opacity: opacity)
+        // White-hot point at each head.
+        var core = context
+        core.blendMode = .plusLighter
+        core.addFilter(.blur(radius: 4 + 2 * beat))
+        core.opacity = opacity * (0.75 + 0.25 * min(beat, 1))
+        let coreReach = min(0.008, length * 0.2)
+        let coreStyle = StrokeStyle(lineWidth: rimWidth * 0.7, lineCap: .round)
+        for comet in comets {
+            guard let range = Self.cometRange(comet, reach: coreReach) else { continue }
+            core.stroke(Self.segment(of: rimPath, from: range.lowerBound, to: range.upperBound), with: .color(cometHeadColor.lerp(to: .white, t: 0.4).color), style: coreStyle)
+        }
+
+        drawChromaticSplit(in: context, inset: rimWidth * 0.25, amount: aberration, opacity: opacity) { layer, inset in
+            self.strokeComets(comets, along: self.edgePath(in: bounds, inset: inset), length: length, lineWidth: rimWidth * 0.8, into: &layer)
+        }
     }
 
-    /// Angle (from screen center) of the leading chase comet's head, which moves at constant speed along the edges.
-    private func chaseHeadAngle(in bounds: CGRect) -> Double {
-        let head = Self.perimeterPoint(chasePosition, in: bounds)
-        return atan2(head.y - bounds.midY, head.x - bounds.midX)
+    private func strokeComets(_ comets: [Comet], along path: Path, length: Double, lineWidth: Double, into layer: inout GraphicsContext) {
+        let n = Self.cometLayerCount
+        let style = StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
+        for comet in comets {
+            // Longest (tail) first, so the brighter head layers composite on top.
+            for k in stride(from: n - 1, through: 0, by: -1) {
+                guard let range = Self.cometRange(comet, reach: length * Double(k + 1) / Double(n)) else { continue }
+                let color = cometColor(at: Double(k) / Double(n - 1)).color.opacity(Self.cometLayerAlphas[k])
+                layer.stroke(Self.segment(of: path, from: range.lowerBound, to: range.upperBound), with: .color(color), style: style)
+            }
+        }
     }
+
+    /// The stretch of perimeter covered by `comet` from its head back `reach`, after clipping.
+    private static func cometRange(_ comet: Comet, reach: Double) -> ClosedRange<Double>? {
+        var from = comet.direction > 0 ? comet.head - reach : comet.head
+        var to = comet.direction > 0 ? comet.head : comet.head + reach
+        if let clip = comet.clip {
+            from = max(from, clip.lowerBound)
+            to = min(to, clip.upperBound)
+        }
+        return to - from > 0.0005 ? from...to : nil
+    }
+
+    /// The part of the closed bezel `path` between perimeter fractions `from` and `to` (to > from),
+    /// wrapping across the top-center start point when needed.
+    private static func segment(of path: Path, from: Double, to: Double) -> Path {
+        let shift = from.rounded(.down)
+        let a = from - shift
+        let b = to - shift
+        if b <= 1 { return path.trimmedPath(from: a, to: b) }
+        var joined = path.trimmedPath(from: a, to: 1)
+        joined.addPath(path.trimmedPath(from: 0, to: min(b - 1, 1)))
+        return joined
+    }
+
+    /// Symmetry: a bloom at bottom-center that swells as the mirrored heads arrive and fades while
+    /// their tails drain into it.
+    private func drawMergeGlow(in context: GraphicsContext, bounds: CGRect, beat: Double, opacity: Double, state: AppState) {
+        let p = symmetryProgress
+        let glow: Double
+        if p < 0.5 {
+            let t = min(max((p - 0.45) / 0.05, 0), 1)
+            glow = t * t * (3 - 2 * t)
+        } else {
+            glow = max(0, 1 - (p - 0.5) / max(state.cometLength * 0.9, 0.01))
+        }
+        guard glow > 0.01 else { return }
+
+        let path = edgePath(in: bounds, inset: 0)
+        let reach = 0.01 + 0.008 * min(beat, 1.5)
+        let segment = Self.segment(of: path, from: 0.5 - reach, to: 0.5 + reach)
+        var flash = context
+        flash.blendMode = .plusLighter
+        flash.addFilter(.blur(radius: state.glowSpread * (0.5 + 0.3 * beat)))
+        flash.opacity = opacity * glow
+        flash.stroke(segment, with: .color(cometHeadColor.color), style: StrokeStyle(lineWidth: state.thickness * (1 + 0.6 * beat), lineCap: .round))
+    }
+
+    // MARK: Chromatic impact
 
     /// Heavy-impact channel split: the crisp rim redrawn as a red copy pushed outward and a cyan copy
-    /// pulled inward. Each copy keeps the rim's own gradient as its alpha (so in Chasing only the comets
-    /// split) and is driven straight off the bass envelope, so it snaps back as the hit decays.
-    private func drawChromaticSplit(in context: GraphicsContext, bounds: CGRect, shading: GraphicsContext.Shading, inset: Double, lineWidth: Double, amount: Double, opacity: Double) {
+    /// pulled inward. `stroke` draws the rim (full ring or comets) at a given inset, so each copy keeps
+    /// the rim's own alpha (in the comet styles only the comets split). Driven straight off the bass
+    /// envelope, so it snaps back as the hit decays.
+    private func drawChromaticSplit(in context: GraphicsContext, inset: Double, amount: Double, opacity: Double, stroke: (inout GraphicsContext, Double) -> Void) {
         guard amount > 0.01 else { return }
         let shift = 3 + 7 * amount
         let channels: [(inset: Double, red: Float, green: Float, blue: Float)] = [
@@ -273,25 +401,28 @@ final class GlowRenderer: ObservableObject {
             var split = context
             split.blendMode = .plusLighter
             split.opacity = min(1, opacity * amount * 1.1)
-            // Replace RGB with a pure tint while keeping the gradient's alpha.
+            // Replace RGB with a pure tint while keeping the stroke's alpha.
             var tint = ColorMatrix()
             tint.r1 = 0; tint.r5 = channel.red
             tint.g2 = 0; tint.g5 = channel.green
             tint.b3 = 0; tint.b5 = channel.blue
             split.addFilter(.colorMatrix(tint))
             split.addFilter(.blur(radius: 2.5))
-            split.stroke(edgePath(in: bounds, inset: channel.inset), with: shading, lineWidth: lineWidth * 0.8)
+            split.drawLayer { layer in
+                stroke(&layer, channel.inset)
+            }
         }
     }
 
     // MARK: Kinetic physics
 
-    private func updateKinetics(dt: Double, levels: (bass: Double, vocal: Double), spawning: Bool, bounds: CGRect, state: AppState) {
+    private func updateKinetics(dt: Double, levels: (bass: Double, vocal: Double), spawning: Bool, merged: Bool, state: AppState) {
         bassCooldown -= dt
         vocalCooldown -= dt
 
         if spawning, !nodes.isEmpty {
-            let hot = hotAngles(in: bounds, style: state.animationStyle).map { nodeIndex(nearestAngle: $0) }
+            let style = state.animationStyle
+            let hot = hotNodes(style: style)
 
             // Bass transient: the envelope jumps well above its recent average.
             let bassRise = levels.bass - bassAverage
@@ -306,17 +437,28 @@ final class GlowRenderer: ObservableObject {
                     displacementVelocity[i] += kick * 0.2
                 }
                 stringAwake = true
-                spawnSparks(count: 3 + Int((hit * 5).rounded()), around: hot, color: primary.lerp(to: .white, t: 0.3), energy: hit)
+                // Sparks are all there is in Sparks Only, so each hit throws a fuller burst.
+                let count = style == .sparksOnly ? 6 + Int((hit * 8).rounded()) : 3 + Int((hit * 5).rounded())
+                spawnSparks(count: count, around: hot, color: primary.lerp(to: .white, t: 0.3), energy: hit)
                 shake = min(shake + hit * hit * state.reactivity * (levels.bass > 0.7 ? 1 : 0.35), 1.5)
                 bassCooldown = 0.14
             }
 
-            // Vocal transient: a burst of secondary-colored sparks, no bounce.
+            // Vocal transient: a burst of secondary-colored sparks, no bounce. Sparks Only reacts to
+            // hard bass hits alone.
             let vocalRise = levels.vocal - vocalAverage
-            if vocalCooldown <= 0, levels.vocal > 0.5, vocalRise > 0.2 {
+            if style != .sparksOnly, vocalCooldown <= 0, levels.vocal > 0.5, vocalRise > 0.2 {
                 let hit = min(max(vocalRise * 2, 0.3), 1)
                 spawnSparks(count: 3 + Int((hit * 2).rounded()), around: hot, color: secondary.lerp(to: .white, t: 0.2), energy: hit * 0.8)
                 vocalCooldown = 0.3
+            }
+
+            // Symmetry: the mirrored heads colliding at bottom-center flick the string and throw sparks.
+            if merged {
+                let bottom = nodeIndex(atFraction: 0.5)
+                pluck(at: bottom, velocity: 450 * state.reactivity, width: 6)
+                stringAwake = true
+                spawnSparks(count: 5, around: [bottom], color: cometHeadColor, energy: 0.6)
             }
         }
 
@@ -327,18 +469,29 @@ final class GlowRenderer: ObservableObject {
         stepSparks(dt: dt)
     }
 
-    /// Angles of the two brightest points on the rim: the chase comet heads, or the brighter of the
-    /// two album colors in the rotating breathing gradient.
-    private func hotAngles(in bounds: CGRect, style: AnimationStyle) -> [Double] {
-        let base: Double
+    /// Nodes at the brightest points on the rim, where hits pluck the string and sparks spawn: the comet
+    /// heads, the brighter of the two album colors in the rotating breathing gradient, or (with no rim
+    /// at all) random spots around the bezel.
+    private func hotNodes(style: AnimationStyle) -> [Int] {
         switch style {
-        case .chasing:
-            base = chaseHeadAngle(in: bounds)
-        case .breathing, .solid:
+        case .breathing:
             // Gradient stops [p, s, p, s, p]: primary sits at +0/+π, secondary at +π/2/+3π/2.
-            base = primary.luminance >= secondary.luminance ? angle : angle + .pi / 2
+            let base = primary.luminance >= secondary.luminance ? angle : angle + .pi / 2
+            return [base, base + .pi].map { nodeIndex(nearestAngle: $0) }
+        case .chasing:
+            return [chasePosition, chasePosition + 0.5].map { nodeIndex(atFraction: $0) }
+        case .symmetry:
+            let head = min(symmetryProgress, 0.5)
+            return [head, 1 - head].map { nodeIndex(atFraction: $0) }
+        case .sparksOnly:
+            return (0..<3).map { _ in Int.random(in: 0..<nodes.count) }
         }
-        return [base, base + .pi]
+    }
+
+    /// Nodes are spaced evenly by arc length from top-center, so a perimeter fraction maps straight to one.
+    private func nodeIndex(atFraction t: Double) -> Int {
+        let n = nodes.count
+        return Int((t - t.rounded(.down)) * Double(n)) % n
     }
 
     private func nodeIndex(nearestAngle target: Double) -> Int {
@@ -390,7 +543,7 @@ final class GlowRenderer: ObservableObject {
         let maxDisplacement = d.reduce(0) { max($0, abs($1)) }
         let maxVelocity = v.reduce(0) { max($0, abs($1)) }
         if maxDisplacement < 0.05, maxVelocity < 0.5 {
-            // Settled: snap to rest so drawing goes back to the exact original rounded-rect paths.
+            // Settled: snap to rest so drawing goes back to the exact analytic bezel paths.
             d = [Double](repeating: 0, count: n)
             v = d
             stringAwake = false
@@ -491,122 +644,231 @@ final class GlowRenderer: ObservableObject {
 
     // MARK: Edge geometry
 
+    /// Notch bottom-corner radius, and the small flare where the notch sides meet the top edge.
+    private static let notchBottomRadius = 8.0
+    private static let notchFlareRadius = 4.0
+    /// Spacing (pt) of the dense samples used to draw the bent string.
+    private static let sampleSpacing = 4.0
+
+    /// The camera housing on `screen`, in the overlay's top-left-origin coordinates, or nil for a plain
+    /// rectangle. Built-in notched panels report a tall top safe area; external displays report 0.
+    private static func notchRect(on screen: NSScreen?) -> CGRect? {
+        guard let screen, screen.safeAreaInsets.top > 30 else { return nil }
+        let height = screen.safeAreaInsets.top
+        let width = screen.frame.width
+        if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+            let minX = left.width
+            let maxX = width - right.width
+            if maxX - minX > 40 {
+                return CGRect(x: minX, y: 0, width: maxX - minX, height: height)
+            }
+        }
+        let fallbackWidth = 200.0
+        return CGRect(x: (width - fallbackWidth) / 2, y: 0, width: fallbackWidth, height: height)
+    }
+
     /// The bezel path at `inset`, bent by the string displacement. While the string is at rest this is
-    /// exactly the original continuous RoundedRectangle, so the calm look is unchanged.
+    /// the exact analytic bezel (rounded rectangle, routed around the notch when there is one).
+    /// Every variant starts at top-center and runs clockwise, so perimeter fractions line up with the
+    /// string nodes for trimming comets.
     private func edgePath(in bounds: CGRect, inset: Double) -> Path {
-        guard stringAwake, nodes.count == Self.nodeCount, nodesSize == bounds.size else {
-            return RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-                .path(in: bounds.insetBy(dx: inset, dy: inset))
+        guard stringAwake, nodes.count == Self.nodeCount, geometrySize == bounds.size, !samples.isEmpty else {
+            return Self.bezelPath(in: bounds, inset: inset, notch: geometrySize == bounds.size ? geometryNotch : nil)
         }
-        let points = nodes.indices.map { i -> CGPoint in
-            let node = nodes[i]
-            let offset = inset + displacement[i]
-            return CGPoint(x: node.point.x + node.normal.dx * offset, y: node.point.y + node.normal.dy * offset)
-        }
-        // Quadratic curves through the midpoints give a smooth closed curve with no kinks at the nodes.
-        func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
-            CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
-        }
-        let n = points.count
         var path = Path()
-        path.move(to: midpoint(points[n - 1], points[0]))
-        for i in 0..<n {
-            path.addQuadCurve(to: midpoint(points[i], points[(i + 1) % n]), control: points[i])
+        for (k, sample) in samples.enumerated() {
+            let offset = inset + displacement(atNode: sample.node)
+            let point = CGPoint(x: sample.point.x + sample.normal.dx * offset, y: sample.point.y + sample.normal.dy * offset)
+            if k == 0 { path.move(to: point) } else { path.addLine(to: point) }
         }
         path.closeSubpath()
         return path
     }
 
-    /// Lays out the string nodes evenly by arc length around the rounded bezel. Recomputed only when the
-    /// overlay changes size (e.g. moved to another display), which also resets in-flight physics.
-    private func prepareNodes(for size: CGSize) {
+    /// Catmull-Rom interpolation of the closed string at fractional node position `t`.
+    private func displacement(atNode t: Double) -> Double {
+        let n = displacement.count
+        let i = Int(t.rounded(.down))
+        let f = t - Double(i)
+        func d(_ k: Int) -> Double { displacement[((k % n) + n) % n] }
+        let p0 = d(i - 1), p1 = d(i), p2 = d(i + 1), p3 = d(i + 2)
+        return p1 + 0.5 * f * (p2 - p0 + f * (2 * p0 - 5 * p1 + 4 * p2 - p3 + f * (3 * (p1 - p2) + p3 - p0)))
+    }
+
+    /// Analytic bezel at `inset`: clockwise from top-center (the bottom-center of the notch when there
+    /// is one). Screen corners keep a constant radius like the original inset RoundedRectangle; notch
+    /// corners use true offsets so the stroke wraps the housing evenly.
+    private static func bezelPath(in rect: CGRect, inset i: Double, notch: CGRect?) -> Path {
+        let r = cornerRadius
+        var corners: [(point: CGPoint, radius: Double)] = []
+        let start: CGPoint
+        if let notch {
+            start = CGPoint(x: notch.midX, y: notch.maxY + i)
+            corners.append((CGPoint(x: notch.maxX + i, y: notch.maxY + i), notchBottomRadius + i))
+            corners.append((CGPoint(x: notch.maxX + i, y: rect.minY + i), notchFlareRadius - i))
+        } else {
+            start = CGPoint(x: rect.midX, y: rect.minY + i)
+        }
+        corners += [
+            (CGPoint(x: rect.maxX - i, y: rect.minY + i), r),
+            (CGPoint(x: rect.maxX - i, y: rect.maxY - i), r),
+            (CGPoint(x: rect.minX + i, y: rect.maxY - i), r),
+            (CGPoint(x: rect.minX + i, y: rect.minY + i), r),
+        ]
+        if let notch {
+            corners.append((CGPoint(x: notch.minX - i, y: rect.minY + i), notchFlareRadius - i))
+            corners.append((CGPoint(x: notch.minX - i, y: notch.maxY + i), notchBottomRadius + i))
+        }
+
+        var path = Path()
+        path.move(to: start)
+        for (k, corner) in corners.enumerated() {
+            let next = k + 1 < corners.count ? corners[k + 1].point : start
+            if corner.radius > 0.01 {
+                path.addArc(tangent1End: corner.point, tangent2End: next, radius: corner.radius)
+            } else {
+                path.addLine(to: corner.point)
+            }
+        }
+        path.addLine(to: start)
+        path.closeSubpath()
+        return path
+    }
+
+    /// Lays out the string nodes evenly by arc length around the bezel outline, plus the dense draw
+    /// samples. Recomputed only when the overlay changes size or its screen's notch changes, which also
+    /// resets in-flight physics.
+    private func prepareGeometry(for size: CGSize) {
         let r = Self.cornerRadius
-        guard size != nodesSize, size.width > 2 * r, size.height > 2 * r else { return }
-        nodesSize = size
+        guard size != geometrySize, size.width > 2 * r, size.height > 2 * r else { return }
+        geometrySize = size
         let rect = CGRect(origin: .zero, size: size)
-        let length = 2 * (rect.width + rect.height) - 8 * r + 2 * .pi * r
+
+        // Only route around a notch that actually fits between the screen corners.
+        let margin = r + Self.notchFlareRadius + 2
+        if let notch,
+           notch.minX > rect.minX + margin, notch.maxX < rect.maxX - margin,
+           notch.height > Self.notchBottomRadius + Self.notchFlareRadius + 2, notch.height < size.height / 3 {
+            geometryNotch = notch
+        } else {
+            geometryNotch = nil
+        }
+
+        let outline = BezelOutline(rect: rect, cornerRadius: r, notch: geometryNotch,
+                                   notchBottomRadius: Self.notchBottomRadius, notchFlareRadius: Self.notchFlareRadius)
         nodes = (0..<Self.nodeCount).map { i in
-            let (point, normal) = Self.roundedRectSample(Double(i) / Double(Self.nodeCount) * length, in: rect, radius: r)
+            let (point, normal) = outline.sample(Double(i) / Double(Self.nodeCount) * outline.length)
             return EdgeNode(point: point, normal: normal, angle: atan2(point.y - rect.midY, point.x - rect.midX))
+        }
+        let sampleCount = max(64, Int(outline.length / Self.sampleSpacing))
+        samples = (0..<sampleCount).map { i in
+            let fraction = Double(i) / Double(sampleCount)
+            let (point, normal) = outline.sample(fraction * outline.length)
+            return OutlineSample(point: point, normal: normal, node: fraction * Double(Self.nodeCount))
         }
         displacement = [Double](repeating: 0, count: Self.nodeCount)
         displacementVelocity = displacement
         stringAwake = false
         sparks.removeAll()
     }
+}
 
-    /// Point and inward normal at arc length `distance` around a rounded rect, clockwise from top-center
-    /// (y-down coordinates).
-    private static func roundedRectSample(_ distance: Double, in rect: CGRect, radius r: Double) -> (CGPoint, CGVector) {
-        let quarterArc = .pi * r / 2
-        var s = distance
-        func arc(center: CGPoint, from start: Double) -> (CGPoint, CGVector) {
-            let a = start + s / r
-            let direction = CGVector(dx: cos(a), dy: sin(a))
-            return (CGPoint(x: center.x + r * direction.dx, y: center.y + r * direction.dy), CGVector(dx: -direction.dx, dy: -direction.dy))
+/// A rest point on the bezel, its inward unit normal, and its fractional string-node position.
+private struct OutlineSample {
+    let point: CGPoint
+    let normal: CGVector
+    let node: Double
+}
+
+/// The bezel at rest as line and arc segments, clockwise from top-center in y-down coordinates, so it
+/// can be sampled by arc length (with inward normals) for the string nodes.
+private struct BezelOutline {
+    private enum Segment {
+        case line(CGPoint, CGPoint)
+        /// Angles in y-down canvas space; a positive sweep turns right (a convex screen corner), a
+        /// negative one turns left (the notch's bottom corners).
+        case arc(center: CGPoint, radius: Double, start: Double, sweep: Double)
+
+        var length: Double {
+            switch self {
+            case let .line(a, b): return hypot(b.x - a.x, b.y - a.y)
+            case let .arc(_, radius, _, sweep): return radius * abs(sweep)
+            }
         }
 
-        var segment = rect.width / 2 - r
-        if s < segment { return (CGPoint(x: rect.midX + s, y: rect.minY), CGVector(dx: 0, dy: 1)) }
-        s -= segment
-        if s < quarterArc { return arc(center: CGPoint(x: rect.maxX - r, y: rect.minY + r), from: -.pi / 2) }
-        s -= quarterArc
-        segment = rect.height - 2 * r
-        if s < segment { return (CGPoint(x: rect.maxX, y: rect.minY + r + s), CGVector(dx: -1, dy: 0)) }
-        s -= segment
-        if s < quarterArc { return arc(center: CGPoint(x: rect.maxX - r, y: rect.maxY - r), from: 0) }
-        s -= quarterArc
-        segment = rect.width - 2 * r
-        if s < segment { return (CGPoint(x: rect.maxX - r - s, y: rect.maxY), CGVector(dx: 0, dy: -1)) }
-        s -= segment
-        if s < quarterArc { return arc(center: CGPoint(x: rect.minX + r, y: rect.maxY - r), from: .pi / 2) }
-        s -= quarterArc
-        segment = rect.height - 2 * r
-        if s < segment { return (CGPoint(x: rect.minX, y: rect.maxY - r - s), CGVector(dx: 1, dy: 0)) }
-        s -= segment
-        if s < quarterArc { return arc(center: CGPoint(x: rect.minX + r, y: rect.minY + r), from: .pi) }
-        s -= quarterArc
-        return (CGPoint(x: rect.minX + r + s, y: rect.minY), CGVector(dx: 0, dy: 1))
+        func sample(_ s: Double) -> (CGPoint, CGVector) {
+            switch self {
+            case let .line(a, b):
+                let length = max(self.length, 1e-9)
+                let dx = (b.x - a.x) / length
+                let dy = (b.y - a.y) / length
+                // Interior is on the right of the clockwise direction of travel.
+                return (CGPoint(x: a.x + dx * s, y: a.y + dy * s), CGVector(dx: -dy, dy: dx))
+            case let .arc(center, radius, start, sweep):
+                let a = start + (sweep >= 0 ? 1 : -1) * s / radius
+                let direction = CGVector(dx: cos(a), dy: sin(a))
+                let point = CGPoint(x: center.x + radius * direction.dx, y: center.y + radius * direction.dy)
+                // Convex corners face the arc center; the notch's concave corners face away from it.
+                let sign = sweep >= 0 ? -1.0 : 1.0
+                return (point, CGVector(dx: sign * direction.dx, dy: sign * direction.dy))
+            }
+        }
     }
 
-    /// Point at fraction `t` of the way around `rect`, starting at top-center and moving clockwise
-    /// (top → right → bottom → left) in the canvas's y-down coordinates.
-    private static func perimeterPoint(_ t: Double, in rect: CGRect) -> CGPoint {
-        let w = rect.width
-        let h = rect.height
-        var d = t * 2 * (w + h)
-        if d < w / 2 { return CGPoint(x: rect.midX + d, y: rect.minY) }
-        d -= w / 2
-        if d < h { return CGPoint(x: rect.maxX, y: rect.minY + d) }
-        d -= h
-        if d < w { return CGPoint(x: rect.maxX - d, y: rect.maxY) }
-        d -= w
-        if d < h { return CGPoint(x: rect.minX, y: rect.maxY - d) }
-        d -= h
-        return CGPoint(x: rect.minX + d, y: rect.minY)
+    private let segments: [Segment]
+    let length: Double
+
+    init(rect: CGRect, cornerRadius r: Double, notch: CGRect?, notchBottomRadius rb: Double, notchFlareRadius rt: Double) {
+        let (minX, minY, maxX, maxY) = (rect.minX, rect.minY, rect.maxX, rect.maxY)
+        func p(_ x: Double, _ y: Double) -> CGPoint { CGPoint(x: x, y: y) }
+        var segments: [Segment] = []
+
+        if let n = notch {
+            // Along the notch's bottom, around its right corner, up its side and out along the top edge.
+            segments += [
+                .line(p(n.midX, n.maxY), p(n.maxX - rb, n.maxY)),
+                .arc(center: p(n.maxX - rb, n.maxY - rb), radius: rb, start: .pi / 2, sweep: -.pi / 2),
+                .line(p(n.maxX, n.maxY - rb), p(n.maxX, minY + rt)),
+                .arc(center: p(n.maxX + rt, minY + rt), radius: rt, start: .pi, sweep: .pi / 2),
+                .line(p(n.maxX + rt, minY), p(maxX - r, minY)),
+            ]
+        } else {
+            segments.append(.line(p(rect.midX, minY), p(maxX - r, minY)))
+        }
+        segments += [
+            .arc(center: p(maxX - r, minY + r), radius: r, start: -.pi / 2, sweep: .pi / 2),
+            .line(p(maxX, minY + r), p(maxX, maxY - r)),
+            .arc(center: p(maxX - r, maxY - r), radius: r, start: 0, sweep: .pi / 2),
+            .line(p(maxX - r, maxY), p(minX + r, maxY)),
+            .arc(center: p(minX + r, maxY - r), radius: r, start: .pi / 2, sweep: .pi / 2),
+            .line(p(minX, maxY - r), p(minX, minY + r)),
+            .arc(center: p(minX + r, minY + r), radius: r, start: .pi, sweep: .pi / 2),
+        ]
+        if let n = notch {
+            segments += [
+                .line(p(minX + r, minY), p(n.minX - rt, minY)),
+                .arc(center: p(n.minX - rt, minY + rt), radius: rt, start: -.pi / 2, sweep: .pi / 2),
+                .line(p(n.minX, minY + rt), p(n.minX, n.maxY - rb)),
+                .arc(center: p(n.minX + rb, n.maxY - rb), radius: rb, start: .pi, sweep: -.pi / 2),
+                .line(p(n.minX + rb, n.maxY), p(n.midX, n.maxY)),
+            ]
+        } else {
+            segments.append(.line(p(minX + r, minY), p(rect.midX, minY)))
+        }
+
+        self.segments = segments
+        length = segments.reduce(0) { $0 + $1.length }
     }
 
-    private func drawNotchGlow(in context: GraphicsContext, size: CGSize, state: AppState, beat: Double, opacity: Double) {
-        let notch = state.notchSize
-        let rect = CGRect(x: (size.width - notch.width) / 2, y: -4, width: notch.width, height: notch.height + 4)
-        let pill = UnevenRoundedRectangle(
-            cornerRadii: RectangleCornerRadii(topLeading: 0, bottomLeading: 12, bottomTrailing: 12, topTrailing: 0),
-            style: .continuous
-        ).path(in: rect)
-        let shading = GraphicsContext.Shading.linearGradient(
-            Gradient(colors: [primary.color, secondary.color, primary.color]),
-            startPoint: CGPoint(x: rect.minX, y: rect.midY),
-            endPoint: CGPoint(x: rect.maxX, y: rect.midY)
-        )
-
-        var halo = context
-        halo.addFilter(.blur(radius: 10 + 8 * beat))
-        halo.opacity = opacity * (0.55 + 0.45 * min(beat, 1))
-        halo.stroke(pill, with: shading, lineWidth: 4 + 6 * beat)
-
-        var core = context
-        core.addFilter(.blur(radius: 2))
-        core.opacity = opacity * 0.9
-        core.stroke(pill, with: shading, lineWidth: 1.5)
+    /// Point and inward normal at arc length `distance` from top-center.
+    func sample(_ distance: Double) -> (CGPoint, CGVector) {
+        var s = max(distance, 0)
+        for segment in segments {
+            let length = segment.length
+            if s < length { return segment.sample(s) }
+            s -= length
+        }
+        let last = segments[segments.count - 1]
+        return last.sample(last.length)
     }
 }

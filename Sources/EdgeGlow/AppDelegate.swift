@@ -5,15 +5,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let state = AppState.shared
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
-    private var overlay: OverlayController?
+    private var overlays: OverlayWindowManager?
     private var spotify: SpotifyBridge?
     private var audio: AudioCaptureManager?
     private var outsideClickMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let overlay = OverlayController(state: state)
-        overlay.show()
-        self.overlay = overlay
+        let overlays = OverlayWindowManager(state: state)
+        overlays.start()
+        self.overlays = overlays
 
         setUpPopover()
         setUpStatusItem()

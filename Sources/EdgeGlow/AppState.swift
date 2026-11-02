@@ -53,10 +53,12 @@ enum PlaybackState: Equatable {
 enum AnimationStyle: String, CaseIterable, Identifiable {
     /// Rotating dual-color rim pulsing with the bass (the original look).
     case breathing
-    /// Comet-tail gradient racing around the perimeter, top → right → bottom → left, sped up by vocal energy.
+    /// Two comets with bright heads and fading tails racing clockwise around an otherwise dark bezel.
     case chasing
-    /// Fixed gradient, no motion or pulse; only fades and color crossfades.
-    case solid
+    /// A mirrored pair of comets running from top-center down both sides and merging at bottom-center.
+    case symmetry
+    /// No rim at all: only the kinetic sparks fired inward by hard bass transients.
+    case sparksOnly
 
     var id: String { rawValue }
 
@@ -64,9 +66,31 @@ enum AnimationStyle: String, CaseIterable, Identifiable {
         switch self {
         case .breathing: return "Breathing"
         case .chasing: return "Chasing"
-        case .solid: return "Solid"
+        case .symmetry: return "Symmetry"
+        case .sparksOnly: return "Sparks Only"
         }
     }
+
+    var symbol: String {
+        switch self {
+        case .breathing: return "wind"
+        case .chasing: return "arrow.clockwise"
+        case .symmetry: return "arrow.triangle.merge"
+        case .sparksOnly: return "sparkles"
+        }
+    }
+
+    var caption: String {
+        switch self {
+        case .breathing: return "Rotating two-color rim that pulses with the kick"
+        case .chasing: return "Comets chase the bezel, faster on vocals, fuller on bass"
+        case .symmetry: return "Mirrored comets fall down both sides and merge at the bottom"
+        case .sparksOnly: return "Dark edges. Only hard bass hits throw sparks inward"
+        }
+    }
+
+    /// Styles that draw comets, and so use the Comet Length setting.
+    var usesComets: Bool { self == .chasing || self == .symmetry }
 }
 
 /// A connected display as shown in the popover's display picker.
@@ -90,12 +114,15 @@ final class AppState: ObservableObject {
         static let intensity = "intensity"
         static let idleWhenPaused = "idleWhenPaused"
         static let useCustomColors = "useCustomColors"
-        static let notchGlowEnabled = "notchGlowEnabled"
         static let customPrimary = "customPrimary"
         static let customSecondary = "customSecondary"
         static let animationStyle = "animationStyle"
-        static let selectedDisplayID = "selectedDisplayID"
+        static let activeDisplays = "activeDisplays"
         static let kineticEffects = "kineticEffects"
+        static let cometLength = "cometLength"
+        // Removed settings, cleared on launch.
+        static let legacyNotchGlowEnabled = "notchGlowEnabled"
+        static let legacySelectedDisplayID = "selectedDisplayID"
     }
 
     // MARK: Playback (driven by SpotifyBridge)
@@ -120,14 +147,10 @@ final class AppState: ObservableObject {
     /// Bass/vocal energies; read by the renderer every frame, so not @Published.
     let audioLevels = AudioLevels()
 
-    // MARK: Display geometry (driven by OverlayController)
+    // MARK: Displays (driven by OverlayWindowManager)
 
-    @Published var hasNotch = false
-    @Published var notchSize = CGSize(width: 190, height: 32)
+    /// Connected displays, in NSScreen order.
     @Published var availableDisplays: [DisplayInfo] = []
-    /// The display the overlay is actually on. Differs from `selectedDisplayID` while the chosen
-    /// monitor is unplugged and the overlay has fallen back to the main screen.
-    @Published var activeDisplayID: String?
 
     // MARK: Persisted settings
 
@@ -137,16 +160,17 @@ final class AppState: ObservableObject {
     @Published var intensity: Double { didSet { defaults.set(intensity, forKey: Key.intensity) } }
     @Published var idleWhenPaused: Bool { didSet { defaults.set(idleWhenPaused, forKey: Key.idleWhenPaused) } }
     @Published var useCustomColors: Bool { didSet { defaults.set(useCustomColors, forKey: Key.useCustomColors) } }
-    @Published var notchGlowEnabled: Bool { didSet { defaults.set(notchGlowEnabled, forKey: Key.notchGlowEnabled) } }
     @Published var customPrimary: RGBColor { didSet { defaults.set(customPrimary.array, forKey: Key.customPrimary) } }
     @Published var customSecondary: RGBColor { didSet { defaults.set(customSecondary.array, forKey: Key.customSecondary) } }
     @Published var animationStyle: AnimationStyle { didSet { defaults.set(animationStyle.rawValue, forKey: Key.animationStyle) } }
     /// Bass-driven edge bounce, sparks and chromatic impact flashes. The physics state itself lives in
     /// GlowRenderer, since it changes every frame and must not trigger SwiftUI updates.
     @Published var kineticEffects: Bool { didSet { defaults.set(kineticEffects, forKey: Key.kineticEffects) } }
-    /// User's chosen display; nil means "main screen". Kept while that display is disconnected so the
-    /// overlay returns to it when it is plugged back in.
-    @Published var selectedDisplayID: String? { didSet { defaults.set(selectedDisplayID, forKey: Key.selectedDisplayID) } }
+    /// Comet length as a fraction of the bezel perimeter (Chasing and Symmetry).
+    @Published var cometLength: Double { didSet { defaults.set(cometLength, forKey: Key.cometLength) } }
+    /// Display UUIDs (`NSScreen.edgeGlowIdentifier`) that get an overlay. Empty hides the glow everywhere.
+    /// IDs of unplugged displays are kept, so the glow returns when that monitor is reconnected.
+    @Published var activeDisplays: Set<String> { didSet { saveActiveDisplays() } }
 
     private init() {
         defaults.register(defaults: [
@@ -156,8 +180,8 @@ final class AppState: ObservableObject {
             Key.intensity: 0.85,
             Key.idleWhenPaused: true,
             Key.useCustomColors: false,
-            Key.notchGlowEnabled: false,
             Key.kineticEffects: true,
+            Key.cometLength: 0.18,
         ])
         thickness = defaults.double(forKey: Key.thickness)
         glowSpread = defaults.double(forKey: Key.glowSpread)
@@ -165,12 +189,31 @@ final class AppState: ObservableObject {
         intensity = defaults.double(forKey: Key.intensity)
         idleWhenPaused = defaults.bool(forKey: Key.idleWhenPaused)
         useCustomColors = defaults.bool(forKey: Key.useCustomColors)
-        notchGlowEnabled = defaults.bool(forKey: Key.notchGlowEnabled)
         kineticEffects = defaults.bool(forKey: Key.kineticEffects)
         customPrimary = RGBColor(array: defaults.array(forKey: Key.customPrimary) as? [Double]) ?? .neonCyan
         customSecondary = RGBColor(array: defaults.array(forKey: Key.customSecondary) as? [Double]) ?? .neonMagenta
         animationStyle = AnimationStyle(rawValue: defaults.string(forKey: Key.animationStyle) ?? "") ?? .breathing
-        selectedDisplayID = defaults.string(forKey: Key.selectedDisplayID)
+        cometLength = defaults.double(forKey: Key.cometLength)
+
+        if let stored = defaults.stringArray(forKey: Key.activeDisplays) {
+            activeDisplays = Set(stored)
+        } else {
+            // First launch, or upgrading from the single display picker: start with the previously
+            // chosen display if it is connected, otherwise the main display.
+            let connected = NSScreen.screens.compactMap(\.edgeGlowIdentifier)
+            if let legacy = defaults.string(forKey: Key.legacySelectedDisplayID), connected.contains(legacy) {
+                activeDisplays = [legacy]
+            } else {
+                activeDisplays = Set([NSScreen.main?.edgeGlowIdentifier ?? connected.first].compactMap { $0 })
+            }
+            saveActiveDisplays()
+        }
+        defaults.removeObject(forKey: Key.legacySelectedDisplayID)
+        defaults.removeObject(forKey: Key.legacyNotchGlowEnabled)
+    }
+
+    private func saveActiveDisplays() {
+        defaults.set(activeDisplays.sorted(), forKey: Key.activeDisplays)
     }
 
     // MARK: Derived values

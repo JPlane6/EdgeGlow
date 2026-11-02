@@ -17,6 +17,7 @@ struct MenuBarPopoverView: View {
             }
             colorsCard
             styleCard
+            displaysCard
             slidersCard
             togglesCard
             footer
@@ -278,39 +279,77 @@ struct MenuBarPopoverView: View {
         )
     }
 
-    // MARK: Animation + display
+    // MARK: Animation style
 
     private var styleCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Animation Style")
-            Picker("Animation Style", selection: $state.animationStyle) {
+            HStack(spacing: 6) {
                 ForEach(AnimationStyle.allCases) { style in
-                    Text(style.title).tag(style)
+                    styleTile(style)
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            Text(state.animationStyle.caption)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .card()
+    }
 
-            HStack(spacing: 8) {
-                Image(systemName: activeDisplay?.isBuiltIn == false ? "display" : "laptopcomputer")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
-                Text("Display")
-                    .font(.system(size: 12))
-                Spacer()
-                Picker("Display", selection: displayBinding) {
-                    ForEach(state.availableDisplays) { display in
-                        Text(display.name).tag(display.id)
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .fixedSize()
-                .disabled(state.availableDisplays.count < 2)
+    private func styleTile(_ style: AnimationStyle) -> some View {
+        let selected = state.animationStyle == style
+        let accent = state.targetPrimary.color
+        return Button {
+            state.animationStyle = style
+        } label: {
+            VStack(spacing: 5) {
+                Image(systemName: style.symbol)
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(height: 16)
+                Text(style.title)
+                    .font(.system(size: 10, weight: .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
-            if displayFallbackActive {
-                Text("Selected display is disconnected. Showing on the main display until it's back.")
+            .foregroundStyle(selected ? Color.primary : Color.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(selected ? accent.opacity(0.16) : Color.white.opacity(0.04))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(selected ? accent.opacity(0.55) : Color.white.opacity(0.08), lineWidth: selected ? 1 : 0.5)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(style.caption)
+    }
+
+    // MARK: Displays
+
+    private var displaysCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                sectionTitle("Displays")
+                Spacer()
+                Text(displaySummary)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.bottom, 2)
+            VStack(spacing: 2) {
+                ForEach(state.availableDisplays) { display in
+                    displayRow(display)
+                }
+            }
+            if disconnectedActiveCount > 0 {
+                Text(disconnectedActiveCount == 1
+                     ? "1 enabled display is disconnected. Its glow comes back when you plug it in."
+                     : "\(disconnectedActiveCount) enabled displays are disconnected. Their glow comes back when you plug them in.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -319,21 +358,56 @@ struct MenuBarPopoverView: View {
         .card()
     }
 
-    private var activeDisplay: DisplayInfo? {
-        state.availableDisplays.first { $0.id == state.activeDisplayID }
+    private func displayRow(_ display: DisplayInfo) -> some View {
+        let enabled = state.activeDisplays.contains(display.id)
+        let accent = state.targetPrimary.color
+        return Button {
+            if enabled {
+                state.activeDisplays.remove(display.id)
+            } else {
+                state.activeDisplays.insert(display.id)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: display.isBuiltIn ? "laptopcomputer" : "display")
+                    .font(.system(size: 12))
+                    .foregroundStyle(enabled ? Color.primary : Color.secondary)
+                    .frame(width: 18)
+                Text(display.name)
+                    .font(.system(size: 12))
+                    .foregroundStyle(enabled ? Color.primary : Color.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Image(systemName: enabled ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 14))
+                    .foregroundStyle(enabled ? accent : Color.white.opacity(0.25))
+                    .shadow(color: enabled ? accent.opacity(0.6) : .clear, radius: 3)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(enabled ? accent.opacity(0.10) : Color.clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 
-    private var displayFallbackActive: Bool {
-        guard let selected = state.selectedDisplayID else { return false }
-        return !state.availableDisplays.contains { $0.id == selected }
+    private var enabledConnectedCount: Int {
+        state.availableDisplays.filter { state.activeDisplays.contains($0.id) }.count
     }
 
-    /// Shows the display actually in use (which is the main screen during a fallback) and saves the user's pick.
-    private var displayBinding: Binding<String> {
-        Binding(
-            get: { state.activeDisplayID ?? state.availableDisplays.first?.id ?? "" },
-            set: { state.selectedDisplayID = $0 }
-        )
+    private var disconnectedActiveCount: Int {
+        let connected = Set(state.availableDisplays.map(\.id))
+        return state.activeDisplays.subtracting(connected).count
+    }
+
+    private var displaySummary: String {
+        let total = state.availableDisplays.count
+        let on = enabledConnectedCount
+        if on == 0 { return "Glow hidden" }
+        return on == total ? (total == 1 ? "On" : "All \(total) on") : "\(on) of \(total) on"
     }
 
     // MARK: Sliders
@@ -345,6 +419,9 @@ struct MenuBarPopoverView: View {
             sliderRow("Glow Spill / Blur", value: $state.glowSpread, range: 15...90, display: "\(Int(state.glowSpread))pt")
             sliderRow("Bass Reactivity", value: $state.reactivity, range: 0...1.5, display: "\(Int((state.reactivity * 100).rounded()))%")
             sliderRow("Master Brightness", value: $state.intensity, range: 0.1...1.0, display: "\(Int((state.intensity * 100).rounded()))%")
+            if state.animationStyle.usesComets {
+                sliderRow("Comet Length", value: $state.cometLength, range: 0.05...0.45, display: "\(Int((state.cometLength * 100).rounded()))%")
+            }
         }
         .card()
     }
@@ -370,8 +447,10 @@ struct MenuBarPopoverView: View {
     private var togglesCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             toggleRow("Keep Idle Glow When Paused", caption: "Soft breathing glow when nothing is playing", isOn: $state.idleWhenPaused)
-            toggleRow("MacBook Notch Rim Glow", caption: "Reactive halo around the camera notch", isOn: $state.notchGlowEnabled)
-            toggleRow("Kinetic Physics", caption: "Edge bounce, sparks and impact flashes on the bass", isOn: $state.kineticEffects)
+            toggleRow("Kinetic Physics", caption: state.animationStyle == .sparksOnly
+                      ? "Always on in Sparks Only"
+                      : "Edge bounce, sparks and impact flashes on the bass", isOn: $state.kineticEffects)
+                .disabled(state.animationStyle == .sparksOnly)
         }
         .card()
     }

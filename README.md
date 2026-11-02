@@ -52,18 +52,19 @@ tccutil reset ScreenCapture com.jplane6.edgeglow
 | `SpotifyBridge.swift` | Playback state and artwork via `NSAppleScript`, Spotify's distributed notification, and a 2 s backup poll |
 | `AudioCaptureManager.swift` | ScreenCaptureKit system-audio capture → vDSP FFT → bass and vocal energies |
 | `ColorExtractor.swift` | Artwork download/cache; picks vivid primary and secondary colors with 32×32 RGBA hue bucketing |
-| `OverlayPanel.swift` | Full-screen, click-through `NSPanel` above the menu bar that follows display changes |
-| `GlowOverlayView.swift` | 60 fps `TimelineView` + `Canvas` with a blurred ambient spill, a crisp bezel rim, and an optional notch halo |
-| `MenuBarPopoverView.swift` | Dark control panel: now playing, colors, sliders, toggles |
+| `OverlayPanel.swift` | Full-screen, click-through `NSPanel` above the menu bar |
+| `OverlayWindowManager.swift` | One overlay panel (and renderer) per enabled display; adds and removes panels as displays are toggled, plugged in or unplugged |
+| `GlowOverlayView.swift` | 60 fps `TimelineView` + `Canvas` with a blurred ambient spill, a crisp bezel rim that wraps the notch automatically, comets and sparks |
+| `MenuBarPopoverView.swift` | Dark control panel: now playing, colors, styles, displays, sliders, toggles |
 
 - **Audio engine:** system audio is mixed to mono and run through a 2048-point Hann-windowed FFT about
   50 times a second. Energy in the 20–150 Hz band (bass) and the 300–3000 Hz band (vocals) is
   converted to dB and scaled against a running peak, so loud and quiet tracks both use the full
   range. A fast-attack, smooth-decay envelope then turns each band into a steady 0–1 value.
 - **Complex wave:** bass drives stroke thickness, opacity and blur bloom in every animated style.
-  Vocal energy drives how fast the Chasing comets move: they glide when nobody is singing and speed
+  Vocal energy drives how fast the Chasing and Symmetry comets move: they glide when nobody is singing and speed
   up on dense vocals. Without audio access, the glow falls back to a gentle breathing animation.
-- **Kinetic physics** (popover toggle, on by default; Breathing and Chasing only):
+- **Kinetic physics** (popover toggle, on by default; always on in Sparks Only):
   - *Bounce:* the bezel is a 240-node spring–mass string. Each bass transient plucks it inward at the
     brightest point on the rim, and the ripples travel along the edges and ring down in about a second.
   - *Sparks:* bass and vocal transients fire 3–8 sparks inward from the hot spots. They slow down
@@ -71,11 +72,23 @@ tccutil reset ScreenCapture com.jplane6.edgeglow
   - *Impact:* when the bass envelope goes above 0.8, the crisp rim splits into a red copy pushed
     outward and a cyan copy pulled inward, and the glow shakes slightly.
   - When nothing is happening, the edge is drawn as the original rounded rectangle.
-- **Animation styles:** *Breathing* is a rotating two-color rim with a kick pulse. *Chasing* sends two
-  comet-tail highlights clockwise around the bezel (top → right → bottom → left) at a speed set by
-  the vocals. *Solid* is a still gradient that only crossfades when the song changes.
-- **Display picker:** choose which connected display gets the glow. If that display is unplugged,
-  the glow falls back to the main display and returns when the chosen one is reconnected.
+- **Animation styles:**
+  - *Breathing:* a rotating two-color rim with a kick pulse.
+  - *Chasing:* two comets, each a white-hot head fading into a tail, race clockwise around an
+    otherwise dark bezel. Vocals speed them up and the bass thickens and blooms them. The
+    "Comet Length" slider sets the tail length as a share of the perimeter.
+  - *Symmetry:* a mirrored pair of comets leaves top-center, runs down the left and right edges
+    together and merges in a bloom at bottom-center (with a spark burst when kinetic physics is on).
+    Then the next pair spawns. Their speed follows the vocals.
+  - *Sparks Only:* no rim at all. The only thing drawn is the sparks thrown inward from the dark edges
+    on hard bass transients.
+- **Notch:** each display's renderer checks its own screen. On a built-in panel with a camera notch
+  (top safe-area inset over 30 pt) the glow path wraps around the notch; external displays get the
+  plain rounded rectangle.
+- **Multiple displays:** every connected display is listed in the popover with a checkmark. Turn on
+  any combination, from none (glow hidden) to all of them at once. Each enabled display gets its own
+  overlay. An enabled display that is unplugged keeps its setting, and its glow comes back when it
+  is reconnected.
 - **Idle glow:** with "Keep Idle Glow When Paused" on, a dimmer, slowly breathing glow stays lit
   while Spotify is paused or closed. Turn it off to fade the overlay out when music stops.
 - **No microphone, and no screen pixels are analyzed.** Screen & System Audio Recording permission
