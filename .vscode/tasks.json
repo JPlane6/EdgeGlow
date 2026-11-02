@@ -1,0 +1,34 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build & Run EdgeGlow",
+            "type": "shell",
+            "command": "./build.sh",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": "$swiftc",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "Build EdgeGlow DMG",
+            "type": "shell",
+            "command": "./build.sh --dmg",
+            "group": "build",
+            "problemMatcher": "$swiftc"
+        },
+        {
+            "label": "swift build",
+            "type": "shell",
+            "command": "swift build",
+            "group": "build",
+            "problemMatcher": "$swiftc"
+        }
+    ]
+}

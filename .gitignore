@@ -60,3 +60,9 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# EdgeGlow build products
+build/
+*.app
+*.dmg
+.DS_Store
