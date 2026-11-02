@@ -47,9 +47,9 @@ enum PlaybackState: Equatable {
 }
 
 enum AnimationStyle: String, CaseIterable, Identifiable {
-    /// Rotating dual-color rim with a beat-locked kick pulse (the original look).
+    /// Rotating dual-color rim pulsing with the bass (the original look).
     case breathing
-    /// Comet-tail gradient racing around the perimeter, top → right → bottom → left, at a BPM-driven speed.
+    /// Comet-tail gradient racing around the perimeter, top → right → bottom → left, sped up by vocal energy.
     case chasing
     /// Fixed gradient, no motion or pulse; only fades and color crossfades.
     case solid
@@ -77,8 +77,6 @@ struct DisplayInfo: Identifiable, Equatable {
 final class AppState: ObservableObject {
     static let shared = AppState()
 
-    static let fallbackBPM = 122.0
-
     private let defaults = UserDefaults.standard
 
     private enum Key {
@@ -102,16 +100,20 @@ final class AppState: ObservableObject {
     @Published var trackName = ""
     @Published var artistName = ""
     @Published var artwork: NSImage?
-    @Published var bpm = AppState.fallbackBPM
-    @Published var bpmIsFallback = true
     @Published var automationDenied = false
     @Published var extractedPrimary = RGBColor.neonCyan
     @Published var extractedSecondary = RGBColor.neonMagenta
 
-    /// Track position (seconds) sampled from Spotify, and when it was sampled. Read every frame by
-    /// the renderer to phase-lock the beat pulse, so deliberately not @Published.
+    /// Track position (seconds) sampled from Spotify, and when it was sampled. Updated on every poll,
+    /// so deliberately not @Published.
     var positionAnchor: Double = 0
     var anchorDate = Date()
+
+    // MARK: System audio (driven by AudioCaptureManager)
+
+    @Published var audioStatus: AudioCaptureStatus = .off
+    /// Bass/vocal energies; read by the renderer every frame, so not @Published.
+    let audioLevels = AudioLevels()
 
     // MARK: Display geometry (driven by OverlayController)
 
@@ -164,6 +166,9 @@ final class AppState: ObservableObject {
     // MARK: Derived values
 
     var isPlaying: Bool { playback == .playing }
+
+    /// Live audio is driving the glow (Spotify playing and system audio capture running).
+    var audioReactive: Bool { isPlaying && audioStatus == .live }
 
     /// Whether the overlay should currently be lit at all.
     var glowActive: Bool { isPlaying || idleWhenPaused }

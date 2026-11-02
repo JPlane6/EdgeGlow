@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let popover = NSPopover()
     private var overlay: OverlayController?
     private var spotify: SpotifyBridge?
+    private var audio: AudioCaptureManager?
     private var outsideClickMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -20,10 +21,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let spotify = SpotifyBridge(state: state)
         spotify.start()
         self.spotify = spotify
+
+        let audio = AudioCaptureManager(state: state)
+        audio.start()
+        self.audio = audio
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         spotify?.stop()
+        audio?.stop()
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
@@ -76,5 +82,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSEvent.removeMonitor(monitor)
             outsideClickMonitor = nil
         }
+    }
+}
+
+extension NSApplication {
+    /// Quits and reopens the app bundle; macOS only applies a new Screen Recording grant after a relaunch.
+    func relaunch() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c", "sleep 0.7; /usr/bin/open \"$0\"", Bundle.main.bundlePath]
+        try? task.run()
+        terminate(nil)
     }
 }

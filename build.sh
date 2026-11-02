@@ -3,6 +3,11 @@
 #   ./build.sh             build + launch
 #   ./build.sh --dmg       also package build/EdgeGlow.dmg
 #   ./build.sh --no-launch build only (CI)
+#
+# Signing: ad-hoc by default. Ad-hoc signatures change on every build, so macOS forgets the Screen &
+# System Audio Recording grant after each rebuild. To keep it, sign with a stable identity, e.g. a
+# self-signed "Code Signing" certificate created in Keychain Access:
+#   SIGN_IDENTITY="EdgeGlow Dev" ./build.sh
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -32,9 +37,14 @@ swiftc Sources/EdgeGlow/*.swift \
 
 echo "==> Copying Info.plist"
 cp Config/Info.plist "$APP/Contents/Info.plist"
+# Without these usage strings macOS refuses the Automation and Screen & System Audio Recording prompts.
+for key in NSAppleEventsUsageDescription NSScreenCaptureUsageDescription NSAudioCaptureUsageDescription; do
+    /usr/libexec/PlistBuddy -c "Print :$key" "$APP/Contents/Info.plist" >/dev/null 2>&1 \
+        || { echo "error: Config/Info.plist is missing $key" >&2; exit 1; }
+done
 
-echo "==> Code-signing"
-codesign --force --deep --sign - --entitlements Config/entitlements.plist "$APP"
+echo "==> Code-signing (${SIGN_IDENTITY:-ad-hoc})"
+codesign --force --deep --sign "${SIGN_IDENTITY:--}" --entitlements Config/entitlements.plist "$APP"
 
 if $MAKE_DMG; then
     echo "==> Packaging build/EdgeGlow.dmg"

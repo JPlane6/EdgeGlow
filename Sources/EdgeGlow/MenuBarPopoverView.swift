@@ -12,6 +12,9 @@ struct MenuBarPopoverView: View {
             if state.automationDenied {
                 permissionBanner
             }
+            if state.audioStatus == .permissionNeeded {
+                audioPermissionBanner
+            }
             colorsCard
             styleCard
             slidersCard
@@ -56,18 +59,62 @@ struct MenuBarPopoverView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            HStack(spacing: 3) {
-                Image(systemName: "metronome.fill")
-                    .font(.system(size: 9))
-                Text("\(state.bpmIsFallback ? "~" : "")\(Int(state.bpm.rounded())) BPM")
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
+            audioBadge
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(Color.white.opacity(0.08)))
+                .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 0.5))
+        }
+    }
+
+    /// Live bass/vocal meter while audio is flowing, otherwise the capture status.
+    @ViewBuilder
+    private var audioBadge: some View {
+        switch state.audioStatus {
+        case .live:
+            // Levels aren't @Published (they update at audio rate), so poll them while the popover is shown.
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
+                let levels = state.audioLevels.snapshot()
+                HStack(spacing: 4) {
+                    levelBar(levels.bass, color: state.targetPrimary.color)
+                    levelBar(levels.vocal, color: state.targetSecondary.color)
+                    Text("LIVE")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .tracking(0.5)
+                }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Capsule().fill(Color.white.opacity(0.08)))
-            .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 0.5))
-            .help(state.bpmIsFallback ? "BPM not found; using a default tempo" : "Tempo from Deezer")
+            .help("Bass (20–150 Hz) and vocals (300–3000 Hz) from system audio")
+        case .starting:
+            badgeLabel("waveform", "Starting…", color: .secondary)
+        case .off:
+            badgeLabel("waveform", "Audio Off", color: .secondary)
+                .help("System audio capture runs while Spotify is playing")
+        case .permissionNeeded:
+            badgeLabel("exclamationmark.triangle.fill", "No Access", color: .yellow)
+        case .failed(let message):
+            badgeLabel("exclamationmark.triangle.fill", "Audio Error", color: .orange)
+                .help(message)
+        }
+    }
+
+    private func levelBar(_ level: Double, color: Color) -> some View {
+        ZStack(alignment: .bottom) {
+            Capsule().fill(Color.white.opacity(0.12))
+            Capsule()
+                .fill(color)
+                .frame(height: max(2, 12 * min(max(level, 0), 1)))
+                .shadow(color: color.opacity(0.8), radius: 2)
+        }
+        .frame(width: 4, height: 12)
+    }
+
+    private func badgeLabel(_ symbol: String, _ text: String, color: Color) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol)
+                .font(.system(size: 9))
+                .foregroundStyle(color)
+            Text(text)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
         }
     }
 
@@ -142,6 +189,30 @@ struct MenuBarPopoverView: View {
                 Button("Open Automation Settings") {
                     if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
                         NSWorkspace.shared.open(url)
+                    }
+                }
+                .controlSize(.small)
+            }
+        }
+        .card()
+    }
+
+    private var audioPermissionBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "waveform.badge.exclamationmark")
+                .foregroundStyle(.yellow)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Allow EdgeGlow under Privacy & Security → Screen & System Audio Recording so the glow can react to the music, then relaunch.")
+                    .font(.system(size: 11))
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button("Open Settings") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                    Button("Relaunch") {
+                        NSApp.relaunch()
                     }
                 }
                 .controlSize(.small)
@@ -272,7 +343,7 @@ struct MenuBarPopoverView: View {
             sectionTitle("Glow")
             sliderRow("Thickness", value: $state.thickness, range: 10...120, display: "\(Int(state.thickness))pt")
             sliderRow("Glow Spill / Blur", value: $state.glowSpread, range: 15...90, display: "\(Int(state.glowSpread))pt")
-            sliderRow("Beat Reactivity", value: $state.reactivity, range: 0...1.5, display: "\(Int((state.reactivity * 100).rounded()))%")
+            sliderRow("Bass Reactivity", value: $state.reactivity, range: 0...1.5, display: "\(Int((state.reactivity * 100).rounded()))%")
             sliderRow("Master Brightness", value: $state.intensity, range: 0.1...1.0, display: "\(Int((state.intensity * 100).rounded()))%")
         }
         .card()
@@ -322,7 +393,7 @@ struct MenuBarPopoverView: View {
 
     private var footer: some View {
         HStack {
-            Text("Synced with Spotify")
+            Text("Spotify colors · live system audio")
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
             Spacer()

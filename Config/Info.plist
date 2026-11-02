@@ -28,5 +28,9 @@
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>EdgeGlow syncs your screen lighting with Spotify album art and playback.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>EdgeGlow requires system audio access to sync lights with the vocal cadence and beat of your music.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>EdgeGlow requires system audio access to sync lights with the vocal cadence and beat of your music.</string>
 </dict>
 </plist>

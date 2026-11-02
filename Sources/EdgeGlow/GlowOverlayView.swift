@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Full-screen liquid rim that hugs the display bezel and pulses to the beat.
+/// Full-screen liquid rim that hugs the display bezel, pulsing with the bass and chasing with the vocals.
 // Note: avoids @State on purpose. In the macOS 27 SDK @State is a macro, and the Command Line Tools
 // ship without the SwiftUI macro plugin, so the renderer is injected by OverlayController instead.
 struct GlowOverlayView: View {
@@ -46,8 +46,9 @@ final class GlowRenderer: ObservableObject {
     private var chasePosition = 0.0
     private var chaseRate = 0.0
 
-    /// Beats per full lap of the chasing comet (two bars of 4/4).
-    private static let beatsPerChaseLap = 8.0
+    /// Chasing speeds in laps per second: the glide with no vocals, and the extra speed at full vocal energy.
+    private static let chaseGlideRate = 1.0 / 12.0
+    private static let chaseVocalBoost = 0.6
 
     func draw(in context: inout GraphicsContext, size: CGSize, date: Date, state: AppState) {
         let dt = lastDate.map { min(max(date.timeIntervalSince($0), 0), 1.0 / 15.0) } ?? 0
@@ -64,26 +65,34 @@ final class GlowRenderer: ObservableObject {
         primary = primary.lerp(to: state.targetPrimary, t: approach(2.2))
         secondary = secondary.lerp(to: state.targetSecondary, t: approach(2.2))
 
-        let spinRate = playing ? 0.35 * state.bpm / 120 : 0.12
+        let spinRate = playing ? 0.35 : 0.12
         angle = (angle + dt * spinRate).truncatingRemainder(dividingBy: 2 * .pi)
 
+        // Live system-audio energies (already envelope-followed on the audio thread).
+        let audioReactive = state.audioReactive
+        let levels = audioReactive ? state.audioLevels.snapshot() : (bass: 0.0, vocal: 0.0)
+
         let rawPulse: Double
-        if playing {
-            // Kick-drum envelope phase-locked to the track position; +π/2 puts the peak on the beat.
-            let beats = state.playbackPosition(at: date) * state.bpm / 60
-            rawPulse = pow(0.5 + 0.5 * sin(2 * .pi * beats + .pi / 2), 2.2)
+        if audioReactive {
+            // The kick drives the pulse directly.
+            rawPulse = levels.bass
         } else {
-            // Slow ambient breathing while idle.
+            // Slow ambient breathing while idle (or while system audio access is unavailable).
             let t = date.timeIntervalSinceReferenceDate
             rawPulse = 0.35 * pow(0.5 + 0.5 * sin(2 * .pi * t / 6), 2.2)
         }
-        // Light smoothing removes jitter from position re-anchoring without dulling the kick.
+        // Light smoothing turns ~50 Hz audio updates into a fluid 60 fps pulse without dulling the kick.
         pulse += (rawPulse - pulse) * approach(30)
 
-        // Chase speed follows the tempo; integrating the timestamp delta keeps the comet gliding
-        // smoothly through BPM changes and position re-anchors instead of jumping.
-        let targetChaseRate = playing ? state.bpm / 60 / Self.beatsPerChaseLap : 1.0 / 14.0
-        chaseRate += (targetChaseRate - chaseRate) * approach(1.5)
+        // Vocal velocity: the comet glides when there's no singing and surges on dense vocals. Speeding up
+        // reacts quickly, slowing down eases off, and integrating dt means the comet never jumps.
+        let targetChaseRate: Double
+        if audioReactive {
+            targetChaseRate = Self.chaseGlideRate + Self.chaseVocalBoost * pow(levels.vocal, 1.5)
+        } else {
+            targetChaseRate = playing ? 1.0 / 8.0 : 1.0 / 14.0
+        }
+        chaseRate += (targetChaseRate - chaseRate) * approach(targetChaseRate > chaseRate ? 6 : 1.2)
         chasePosition = (chasePosition + dt * chaseRate).truncatingRemainder(dividingBy: 1)
 
         guard presence > 0.002 else { return }
@@ -94,11 +103,12 @@ final class GlowRenderer: ObservableObject {
 
         switch state.animationStyle {
         case .breathing:
-            drawRim(in: context, bounds: bounds, angle: angle, beat: beat, opacity: opacity, state: state)
+            // Bass blooms the blur slightly on each kick (≈1× spread at a typical average bass level).
+            drawRim(in: context, bounds: bounds, angle: angle, beat: beat, bloom: 0.9 + 0.3 * beat, opacity: opacity, state: state)
         case .chasing:
             drawChase(in: context, bounds: bounds, beat: beat, opacity: opacity, state: state)
         case .solid:
-            drawRim(in: context, bounds: bounds, angle: -.pi / 2, beat: 0, opacity: opacity, state: state)
+            drawRim(in: context, bounds: bounds, angle: -.pi / 2, beat: 0, bloom: 1, opacity: opacity, state: state)
         }
 
         if state.notchGlowEnabled {
@@ -107,7 +117,7 @@ final class GlowRenderer: ObservableObject {
     }
 
     /// The original two-layer rim (breathing style, and solid with a fixed angle and no beat).
-    private func drawRim(in context: GraphicsContext, bounds: CGRect, angle: Double, beat: Double, opacity: Double, state: AppState) {
+    private func drawRim(in context: GraphicsContext, bounds: CGRect, angle: Double, beat: Double, bloom: Double, opacity: Double, state: AppState) {
         let gradient = Gradient(colors: [primary.color, secondary.color, primary.color, secondary.color, primary.color])
         let shading = GraphicsContext.Shading.conicGradient(
             gradient,
@@ -118,7 +128,7 @@ final class GlowRenderer: ObservableObject {
         // Layer 1: ambient spill. Stroke is centered on the bezel, so the inner half bleeds onto the screen.
         let ambientPath = RoundedRectangle(cornerRadius: 16, style: .continuous).path(in: bounds)
         var ambient = context
-        ambient.addFilter(.blur(radius: state.glowSpread))
+        ambient.addFilter(.blur(radius: state.glowSpread * bloom))
         ambient.opacity = opacity
         ambient.stroke(ambientPath, with: shading, lineWidth: state.thickness * (0.75 + 0.55 * beat))
 
@@ -168,17 +178,18 @@ final class GlowRenderer: ObservableObject {
         base.opacity = opacity * 0.25
         base.stroke(ambientPath, with: baseShading, lineWidth: state.thickness * 0.75)
 
+        // Bass owns the comet's body: thickness, brightness and bloom all swell on the kick.
         var ambient = context
-        ambient.addFilter(.blur(radius: state.glowSpread))
-        ambient.opacity = opacity
+        ambient.addFilter(.blur(radius: state.glowSpread * (0.8 + 0.45 * beat)))
+        ambient.opacity = opacity * (0.7 + 0.3 * min(beat, 1))
         ambient.stroke(ambientPath, with: cometShading, lineWidth: state.thickness * (0.85 + 0.55 * beat))
 
         let rimWidth = max(4, state.thickness * 0.22) * (1 + 0.25 * beat)
         let rimPath = RoundedRectangle(cornerRadius: 16, style: .continuous)
             .path(in: bounds.insetBy(dx: rimWidth * 0.25, dy: rimWidth * 0.25))
         var rim = context
-        rim.addFilter(.blur(radius: 8))
-        rim.opacity = min(1, opacity * (0.9 + 0.3 * beat))
+        rim.addFilter(.blur(radius: 8 * (1 + 0.5 * beat)))
+        rim.opacity = min(1, opacity * (0.75 + 0.4 * beat))
         rim.stroke(rimPath, with: cometShading, lineWidth: rimWidth)
     }
 

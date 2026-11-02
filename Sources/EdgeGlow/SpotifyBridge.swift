@@ -1,7 +1,6 @@
 import AppKit
 
-/// Watches Spotify over AppleEvents (the app's only permission) and publishes playback, artwork
-/// colors and BPM into AppState.
+/// Watches Spotify over AppleEvents and publishes playback state and artwork colors into AppState.
 final class SpotifyBridge {
     private static let bundleID = "com.spotify.client"
     private static let playbackNotification = Notification.Name("com.spotify.client.PlaybackStateChanged")
@@ -39,7 +38,6 @@ final class SpotifyBridge {
     private var pollInFlight = false
     private var currentTrackKey = ""
     private var currentArtworkURL = ""
-    private var bpmTask: Task<Void, Never>?
     private var artworkTask: Task<Void, Never>?
 
     init(state: AppState) {
@@ -65,7 +63,6 @@ final class SpotifyBridge {
         DistributedNotificationCenter.default().removeObserver(self)
         timer?.invalidate()
         timer = nil
-        bpmTask?.cancel()
         artworkTask?.cancel()
     }
 
@@ -149,7 +146,6 @@ final class SpotifyBridge {
 
         if trackChanged {
             currentTrackKey = key
-            fetchBPM(track: name, artist: artist, key: key)
         }
 
         if playing {
@@ -195,97 +191,5 @@ final class SpotifyBridge {
                 self.state.extractedSecondary = palette?.secondary ?? .neonMagenta
             }
         }
-    }
-
-    // MARK: BPM
-
-    private func fetchBPM(track: String, artist: String, key: String) {
-        bpmTask?.cancel()
-        bpmTask = Task { [weak self] in
-            let bpm = await DeezerBPM.lookup(track: track, artist: artist)
-            await MainActor.run { [self] in
-                guard let self, !Task.isCancelled, self.currentTrackKey == key else { return }
-                self.state.bpm = bpm ?? AppState.fallbackBPM
-                self.state.bpmIsFallback = bpm == nil
-            }
-        }
-    }
-}
-
-/// Key-less BPM lookup via Deezer's public API: search → first hit's id → /track/{id} → "bpm".
-private enum DeezerBPM {
-    private struct SearchResponse: Decodable {
-        struct Hit: Decodable { let id: Int }
-        let data: [Hit]?
-    }
-
-    private struct TrackResponse: Decodable {
-        let bpm: Double?
-    }
-
-    private static let session: URLSession = {
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 6
-        config.requestCachePolicy = .returnCacheDataElseLoad
-        return URLSession(configuration: config)
-    }()
-
-    static func lookup(track: String, artist: String) async -> Double? {
-        let simplified = simplify(track)
-        // Plain "track artist" search has the best recall; Deezer's advanced syntax is a last resort.
-        var queries = ["\(track) \(artist)"]
-        if simplified != track {
-            queries.append("\(simplified) \(artist)")
-        }
-        queries.append("track:\"\(track)\" artist:\"\(artist)\"")
-
-        for query in queries {
-            if Task.isCancelled { return nil }
-            guard let id = await firstTrackID(for: query) else { continue }
-            guard let bpm = await trackBPM(id: id) else { return nil }
-            return bpm
-        }
-        return nil
-    }
-
-    private static func firstTrackID(for query: String) async -> Int? {
-        guard let url = URL(string: "https://api.deezer.com/search?limit=1&q=" + encode(query)),
-              let response: SearchResponse = await fetch(url) else { return nil }
-        return response.data?.first?.id
-    }
-
-    private static func trackBPM(id: Int) async -> Double? {
-        guard let url = URL(string: "https://api.deezer.com/track/\(id)"),
-              let response: TrackResponse = await fetch(url),
-              let bpm = response.bpm, (40...250).contains(bpm) else { return nil }
-        return bpm
-    }
-
-    private static func fetch<T: Decodable>(_ url: URL) async -> T? {
-        do {
-            let (data, response) = try await session.data(from: url)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-            return try JSONDecoder().decode(T.self, from: data)
-        } catch {
-            return nil
-        }
-    }
-
-    /// Percent-encodes a query value, including the delimiters URLQueryItem would leave alone.
-    private static func encode(_ value: String) -> String {
-        var allowed = CharacterSet.urlQueryAllowed
-        allowed.remove(charactersIn: "&=+?#/")
-        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
-    }
-
-    /// Drops "(feat. …)", "[Live]" and " - Remastered 2011" style suffixes that hurt search recall.
-    private static func simplify(_ track: String) -> String {
-        var result = track
-        if let range = result.range(of: " - ") {
-            result = String(result[..<range.lowerBound])
-        }
-        result = result.replacingOccurrences(of: #"\s*[\(\[].*?[\)\]]"#, with: "", options: .regularExpression)
-        let trimmed = result.trimmingCharacters(in: .whitespaces)
-        return trimmed.isEmpty ? track : trimmed
     }
 }
