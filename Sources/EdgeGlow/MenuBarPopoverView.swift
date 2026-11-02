@@ -371,6 +371,7 @@ struct MenuBarPopoverView: View {
         VStack(alignment: .leading, spacing: 10) {
             toggleRow("Keep Idle Glow When Paused", caption: "Soft breathing glow when nothing is playing", isOn: $state.idleWhenPaused)
             toggleRow("MacBook Notch Rim Glow", caption: "Reactive halo around the camera notch", isOn: $state.notchGlowEnabled)
+            toggleRow("Kinetic Physics", caption: "Edge bounce, sparks and impact flashes on the bass", isOn: $state.kineticEffects)
         }
         .card()
     }

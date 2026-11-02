@@ -9,6 +9,7 @@ struct RGBColor: Equatable {
 
     static let neonCyan = RGBColor(r: 0.0, g: 0.90, b: 1.0)
     static let neonMagenta = RGBColor(r: 1.0, g: 0.16, b: 0.85)
+    static let white = RGBColor(r: 1, g: 1, b: 1)
 
     init(r: Double, g: Double, b: Double) {
         self.r = r
@@ -29,6 +30,9 @@ struct RGBColor: Equatable {
     var array: [Double] { [r, g, b] }
 
     var color: Color { Color(.sRGB, red: r, green: g, blue: b, opacity: 1) }
+
+    /// Relative luminance (Rec. 709), used to find the brightest part of a gradient.
+    var luminance: Double { 0.2126 * r + 0.7152 * g + 0.0722 * b }
 
     var hex: String {
         func byte(_ v: Double) -> Int { Int((min(max(v, 0), 1) * 255).rounded()) }
@@ -91,6 +95,7 @@ final class AppState: ObservableObject {
         static let customSecondary = "customSecondary"
         static let animationStyle = "animationStyle"
         static let selectedDisplayID = "selectedDisplayID"
+        static let kineticEffects = "kineticEffects"
     }
 
     // MARK: Playback (driven by SpotifyBridge)
@@ -136,6 +141,9 @@ final class AppState: ObservableObject {
     @Published var customPrimary: RGBColor { didSet { defaults.set(customPrimary.array, forKey: Key.customPrimary) } }
     @Published var customSecondary: RGBColor { didSet { defaults.set(customSecondary.array, forKey: Key.customSecondary) } }
     @Published var animationStyle: AnimationStyle { didSet { defaults.set(animationStyle.rawValue, forKey: Key.animationStyle) } }
+    /// Bass-driven edge bounce, sparks and chromatic impact flashes. The physics state itself lives in
+    /// GlowRenderer, since it changes every frame and must not trigger SwiftUI updates.
+    @Published var kineticEffects: Bool { didSet { defaults.set(kineticEffects, forKey: Key.kineticEffects) } }
     /// User's chosen display; nil means "main screen". Kept while that display is disconnected so the
     /// overlay returns to it when it is plugged back in.
     @Published var selectedDisplayID: String? { didSet { defaults.set(selectedDisplayID, forKey: Key.selectedDisplayID) } }
@@ -149,6 +157,7 @@ final class AppState: ObservableObject {
             Key.idleWhenPaused: true,
             Key.useCustomColors: false,
             Key.notchGlowEnabled: false,
+            Key.kineticEffects: true,
         ])
         thickness = defaults.double(forKey: Key.thickness)
         glowSpread = defaults.double(forKey: Key.glowSpread)
@@ -157,6 +166,7 @@ final class AppState: ObservableObject {
         idleWhenPaused = defaults.bool(forKey: Key.idleWhenPaused)
         useCustomColors = defaults.bool(forKey: Key.useCustomColors)
         notchGlowEnabled = defaults.bool(forKey: Key.notchGlowEnabled)
+        kineticEffects = defaults.bool(forKey: Key.kineticEffects)
         customPrimary = RGBColor(array: defaults.array(forKey: Key.customPrimary) as? [Double]) ?? .neonCyan
         customSecondary = RGBColor(array: defaults.array(forKey: Key.customSecondary) as? [Double]) ?? .neonMagenta
         animationStyle = AnimationStyle(rawValue: defaults.string(forKey: Key.animationStyle) ?? "") ?? .breathing

@@ -63,6 +63,14 @@ tccutil reset ScreenCapture com.jplane6.edgeglow
 - **Complex wave:** bass drives stroke thickness, opacity and blur bloom in every animated style.
   Vocal energy drives how fast the Chasing comets move: they glide when nobody is singing and speed
   up on dense vocals. Without audio access, the glow falls back to a gentle breathing animation.
+- **Kinetic physics** (popover toggle, on by default; Breathing and Chasing only):
+  - *Bounce:* the bezel is a 240-node spring–mass string. Each bass transient plucks it inward at the
+    brightest point on the rim, and the ripples travel along the edges and ring down in about a second.
+  - *Sparks:* bass and vocal transients fire 3–8 sparks inward from the hot spots. They slow down
+    and fade over about a second, with faint constellation lines between nearby sparks.
+  - *Impact:* when the bass envelope goes above 0.8, the crisp rim splits into a red copy pushed
+    outward and a cyan copy pulled inward, and the glow shakes slightly.
+  - When nothing is happening, the edge is drawn as the original rounded rectangle.
 - **Animation styles:** *Breathing* is a rotating two-color rim with a kick pulse. *Chasing* sends two
   comet-tail highlights clockwise around the bezel (top → right → bottom → left) at a speed set by
   the vocals. *Solid* is a still gradient that only crossfades when the song changes.
