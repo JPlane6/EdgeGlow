@@ -55,7 +55,7 @@ enum AnimationStyle: String, CaseIterable, Identifiable {
     case breathing
     /// Two comets with bright heads and fading tails racing clockwise around an otherwise dark bezel.
     case chasing
-    /// A mirrored pair of comets running from top-center down both sides and merging at bottom-center.
+    /// A mirrored pair of comets running down both sides to merge at bottom-center, then back up to top-center.
     case symmetry
     /// No rim at all: only the kinetic sparks fired inward by hard bass transients.
     case sparksOnly
@@ -84,7 +84,7 @@ enum AnimationStyle: String, CaseIterable, Identifiable {
         switch self {
         case .breathing: return "Rotating two-color rim that pulses with the kick"
         case .chasing: return "Comets chase the bezel, faster on vocals, fuller on bass"
-        case .symmetry: return "Mirrored comets fall down both sides and merge at the bottom"
+        case .symmetry: return "Mirrored comets sweep both sides, alternating top-to-bottom and back"
         case .sparksOnly: return "Dark edges. Only hard bass hits throw sparks inward"
         }
     }

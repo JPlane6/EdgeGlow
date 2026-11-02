@@ -79,7 +79,9 @@ tccutil reset ScreenCapture com.jplane6.edgeglow
     "Comet Length" slider sets the tail length as a share of the perimeter.
   - *Symmetry:* a mirrored pair of comets leaves top-center, runs down the left and right edges
     together and merges in a bloom at bottom-center (with a spark burst when kinetic physics is on).
-    Then the next pair spawns. Their speed follows the vocals.
+    At the moment they merge, the direction flips: the next pair launches from bottom-center and climbs
+    both edges to merge at top-center, and it keeps alternating from there. Each new pair rises out
+    of the previous pair's draining tails. Their speed follows the vocals.
   - *Sparks Only:* no rim at all. The only thing drawn is the sparks thrown inward from the dark edges
     on hard bass transients.
 - **Notch:** each display's renderer checks its own screen. On a built-in panel with a camera notch

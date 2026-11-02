@@ -60,9 +60,14 @@ final class GlowRenderer: ObservableObject {
     /// and its smoothed speed in laps per second. Symmetry reuses the same vocal-driven speed.
     private var chasePosition = 0.0
     private var chaseRate = 0.0
-    /// Symmetry style: progress of the current mirrored pair, in perimeter fractions. 0 = spawning at
-    /// top-center, 0.5 = heads meet at bottom-center, up to 0.5 + comet length while the tails drain.
+    /// Symmetry style: direction of the current pass. True runs top-center → bottom-center, false runs
+    /// bottom-center → top-center; it flips every time the mirrored heads merge.
+    private var symmetryTopToBottom = true
+    /// Progress of the current mirrored pair in perimeter fractions: 0 = spawning at the origin,
+    /// 0.5 = heads merging at the opposite center.
     private var symmetryProgress = 0.0
+    /// True while the previous pair's tails are still draining into the point the current pair left from.
+    private var symmetryDraining = false
 
     /// Chasing speeds in laps per second: the glide with no vocals, and the extra speed at full vocal energy.
     private static let chaseGlideRate = 1.0 / 12.0
@@ -166,14 +171,19 @@ final class GlowRenderer: ObservableObject {
         chaseRate += (targetChaseRate - chaseRate) * approach(targetChaseRate > chaseRate ? 6 : 1.2)
         chasePosition = (chasePosition + dt * chaseRate).truncatingRemainder(dividingBy: 1)
 
-        // Symmetry: one mirrored pair per pass. The next pair spawns once the previous one has fully
-        // drained into the bottom-center merge point.
-        let passLength = 0.5 + state.cometLength
-        let previousProgress = symmetryProgress
+        // Symmetry: alternating passes. The moment the mirrored heads merge, the direction flips and the
+        // next pair launches from that same point back toward the opposite center, while the previous
+        // pair's tails finish draining into it.
         symmetryProgress += dt * chaseRate * Self.symmetrySpeed
-        let merged = style == .symmetry && previousProgress < 0.5 && symmetryProgress >= 0.5
-        if symmetryProgress >= passLength {
-            symmetryProgress = (symmetryProgress - passLength).truncatingRemainder(dividingBy: passLength)
+        var merged = false
+        if symmetryProgress >= 0.5 {
+            symmetryProgress = (symmetryProgress - 0.5).truncatingRemainder(dividingBy: 0.5)
+            symmetryTopToBottom.toggle()
+            symmetryDraining = true
+            merged = style == .symmetry
+        }
+        if symmetryDraining, symmetryProgress >= state.cometLength {
+            symmetryDraining = false
         }
 
         let bounds = CGRect(origin: .zero, size: size)
@@ -207,14 +217,11 @@ final class GlowRenderer: ObservableObject {
             ]
             drawComets(comets, in: shaken, bounds: bounds, beat: beat, opacity: opacity, aberration: aberration, state: state)
         case .symmetry:
-            // Right comet runs clockwise over the first half of the perimeter, the left one mirrors it
-            // counter-clockwise over the second half; both are clipped at bottom-center so they drain
-            // into the merge point instead of passing each other.
-            let p = symmetryProgress
-            let comets = [
-                Comet(head: p, direction: 1, clip: 0...0.5),
-                Comet(head: 1 - p, direction: -1, clip: 0.5...1),
-            ]
+            var comets = Self.symmetryComets(progress: symmetryProgress, topToBottom: symmetryTopToBottom)
+            if symmetryDraining {
+                // The previous pass, carried past its merge point so its clipped tails drain into it.
+                comets += Self.symmetryComets(progress: 0.5 + symmetryProgress, topToBottom: !symmetryTopToBottom)
+            }
             drawComets(comets, in: shaken, bounds: bounds, beat: beat, opacity: opacity, aberration: aberration, state: state)
             drawMergeGlow(in: shaken, bounds: bounds, beat: beat, opacity: opacity, state: state)
         case .sparksOnly:
@@ -361,27 +368,63 @@ final class GlowRenderer: ObservableObject {
         return joined
     }
 
-    /// Symmetry: a bloom at bottom-center that swells as the mirrored heads arrive and fades while
-    /// their tails drain into it.
-    private func drawMergeGlow(in context: GraphicsContext, bounds: CGRect, beat: Double, opacity: Double, state: AppState) {
-        let p = symmetryProgress
-        let glow: Double
-        if p < 0.5 {
-            let t = min(max((p - 0.45) / 0.05, 0), 1)
-            glow = t * t * (3 - 2 * t)
-        } else {
-            glow = max(0, 1 - (p - 0.5) / max(state.cometLength * 0.9, 0.01))
+    // MARK: Symmetry
+
+    /// Perimeter fraction where a Symmetry pass starts: top-center (0, the notch area on notched
+    /// screens) or bottom-center (0.5). The pass merges at the other one.
+    private static func symmetryOrigin(topToBottom: Bool) -> Double { topToBottom ? 0 : 0.5 }
+
+    /// The mirrored pair of one Symmetry pass at `progress` (0…0.5, or beyond while draining). Each comet
+    /// is clipped to its own half of the perimeter, so at the merge point they fuse instead of passing.
+    private static func symmetryComets(progress p: Double, topToBottom: Bool) -> [Comet] {
+        if topToBottom {
+            // Right comet clockwise down the right edge, left comet counter-clockwise down the left.
+            return [
+                Comet(head: p, direction: 1, clip: 0...0.5),
+                Comet(head: 1 - p, direction: -1, clip: 0.5...1),
+            ]
         }
-        guard glow > 0.01 else { return }
+        // Right comet counter-clockwise up the right edge, left comet clockwise up the left.
+        return [
+            Comet(head: 0.5 - p, direction: -1, clip: 0...0.5),
+            Comet(head: 0.5 + p, direction: 1, clip: 0.5...1),
+        ]
+    }
+
+    /// Merge blooms as (perimeter fraction, strength): one swelling at the destination as the heads
+    /// close in, and one fading at the origin while the previous pair's tails drain into it.
+    private func symmetryBlooms(cometLength: Double) -> [(point: Double, glow: Double)] {
+        let p = symmetryProgress
+        let origin = Self.symmetryOrigin(topToBottom: symmetryTopToBottom)
+        var blooms: [(point: Double, glow: Double)] = []
+        let t = min(max((p - 0.45) / 0.05, 0), 1)
+        let arriving = t * t * (3 - 2 * t)
+        if arriving > 0.01 { blooms.append((origin + 0.5, arriving)) }
+        if symmetryDraining {
+            let draining = max(0, 1 - p / max(cometLength * 0.9, 0.01))
+            if draining > 0.01 { blooms.append((origin, draining)) }
+        }
+        return blooms
+    }
+
+    /// Symmetry: a bloom at the merge point that swells as the mirrored heads arrive and fades while
+    /// their tails drain into it; bottom-center on downward passes, top-center on upward ones.
+    private func drawMergeGlow(in context: GraphicsContext, bounds: CGRect, beat: Double, opacity: Double, state: AppState) {
+        let blooms = symmetryBlooms(cometLength: state.cometLength)
+        guard !blooms.isEmpty else { return }
 
         let path = edgePath(in: bounds, inset: 0)
         let reach = 0.01 + 0.008 * min(beat, 1.5)
-        let segment = Self.segment(of: path, from: 0.5 - reach, to: 0.5 + reach)
         var flash = context
         flash.blendMode = .plusLighter
         flash.addFilter(.blur(radius: state.glowSpread * (0.5 + 0.3 * beat)))
-        flash.opacity = opacity * glow
-        flash.stroke(segment, with: .color(cometHeadColor.color), style: StrokeStyle(lineWidth: state.thickness * (1 + 0.6 * beat), lineCap: .round))
+        let style = StrokeStyle(lineWidth: state.thickness * (1 + 0.6 * beat), lineCap: .round)
+        for bloom in blooms {
+            var layer = flash
+            layer.opacity = opacity * bloom.glow
+            // `segment` wraps, so a bloom at top-center (0) spans both sides of the path's start.
+            layer.stroke(Self.segment(of: path, from: bloom.point - reach, to: bloom.point + reach), with: .color(cometHeadColor.color), style: style)
+        }
     }
 
     // MARK: Chromatic impact
@@ -422,7 +465,7 @@ final class GlowRenderer: ObservableObject {
 
         if spawning, !nodes.isEmpty {
             let style = state.animationStyle
-            let hot = hotNodes(style: style)
+            let hot = hotNodes(style: style, cometLength: state.cometLength)
 
             // Bass transient: the envelope jumps well above its recent average.
             let bassRise = levels.bass - bassAverage
@@ -453,12 +496,13 @@ final class GlowRenderer: ObservableObject {
                 vocalCooldown = 0.3
             }
 
-            // Symmetry: the mirrored heads colliding at bottom-center flick the string and throw sparks.
+            // Symmetry: the mirrored heads colliding flick the string and throw sparks at the merge point,
+            // which (after the flip in draw) is the origin of the new pass.
             if merged {
-                let bottom = nodeIndex(atFraction: 0.5)
-                pluck(at: bottom, velocity: 450 * state.reactivity, width: 6)
+                let mergePoint = nodeIndex(atFraction: Self.symmetryOrigin(topToBottom: symmetryTopToBottom))
+                pluck(at: mergePoint, velocity: 450 * state.reactivity, width: 6)
                 stringAwake = true
-                spawnSparks(count: 5, around: [bottom], color: cometHeadColor, energy: 0.6)
+                spawnSparks(count: 5, around: [mergePoint], color: cometHeadColor, energy: 0.6)
             }
         }
 
@@ -472,7 +516,7 @@ final class GlowRenderer: ObservableObject {
     /// Nodes at the brightest points on the rim, where hits pluck the string and sparks spawn: the comet
     /// heads, the brighter of the two album colors in the rotating breathing gradient, or (with no rim
     /// at all) random spots around the bezel.
-    private func hotNodes(style: AnimationStyle) -> [Int] {
+    private func hotNodes(style: AnimationStyle, cometLength: Double) -> [Int] {
         switch style {
         case .breathing:
             // Gradient stops [p, s, p, s, p]: primary sits at +0/+π, secondary at +π/2/+3π/2.
@@ -481,8 +525,11 @@ final class GlowRenderer: ObservableObject {
         case .chasing:
             return [chasePosition, chasePosition + 0.5].map { nodeIndex(atFraction: $0) }
         case .symmetry:
-            let head = min(symmetryProgress, 0.5)
-            return [head, 1 - head].map { nodeIndex(atFraction: $0) }
+            // The current pair's heads, plus any merge point still blooming, so a hard bass hit during a
+            // merge bursts right out of it (bottom-center or top-center, whichever is active).
+            var points = Self.symmetryComets(progress: symmetryProgress, topToBottom: symmetryTopToBottom).map(\.head)
+            points += symmetryBlooms(cometLength: cometLength).filter { $0.glow > 0.3 }.map(\.point)
+            return points.map { nodeIndex(atFraction: $0) }
         case .sparksOnly:
             return (0..<3).map { _ in Int.random(in: 0..<nodes.count) }
         }
