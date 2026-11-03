@@ -14,11 +14,28 @@ screen. It lives in the menu bar and never takes clicks.
 - Optional: Spotify, Apple Music, or YouTube Music in Safari or a Chromium browser for track info and
   album colors. Any other app's sound still drives the glow.
 
+## macOS Installation Note
+
+> **Downloading the `.dmg` from GitHub?** EdgeGlow is open source and only ad-hoc signed (it is not
+> notarized by Apple), so macOS Gatekeeper will block it the first time you launch it.
+
+First-time launch:
+
+1. Open the downloaded `.dmg`.
+2. Drag `EdgeGlow.app` to your `Applications` folder.
+3. Open your `Applications` folder in Finder.
+4. Right-click `EdgeGlow.app` and select **Open**.
+5. Click **Open** again in the security prompt.
+
+*(Alternatively, run `xattr -cr /Applications/EdgeGlow.app` in Terminal after installing.)*
+
+You only need to do this once.
+
 ## Build & run
 
 ```sh
-./build.sh          # compile, sign, and launch build/EdgeGlow.app
-./build.sh --dmg    # also package build/EdgeGlow.dmg
+./build.sh          # compile, sign, and launch EdgeGlow.app
+./build.sh --dmg    # also package EdgeGlow.dmg
 ```
 
 - **VS Code:** `Cmd+Shift+B` runs `./build.sh` (see `.vscode/tasks.json`).
