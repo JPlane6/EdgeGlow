@@ -1,13 +1,24 @@
 # EdgeGlow
 
-Ambient screen-edge rim lighting for macOS, colored by album art and driven by live system audio.
+Ambient screen-edge rim lighting for **macOS and Windows**, colored by album art and driven by live system audio.
+
+<p align="center"><img src="assets/AppIcon-1024.png" width="128" alt="EdgeGlow icon"></p>
+
+## Repository layout
+
+| Path | Contents |
+|------|----------|
+| `macos/` | The Swift app: `Sources/`, `Package.swift`, `Config/`, and `build.sh` (builds `EdgeGlow.app` / `EdgeGlow.dmg`) |
+| `windows/` | The native Windows 10/11 app (C# / .NET 8, WPF + SkiaSharp + WASAPI) and `build.ps1` |
+| `assets/` | Shared brand assets: the procedurally generated icon (`make_icons.sh` regenerates `AppIcon.icns` and `AppIcon.ico`) |
+| `.github/workflows/` | `release-windows.yml` builds `EdgeGlow-Windows-x64.zip` and `EdgeGlow.dmg` and attaches them to a GitHub Release |
 
 EdgeGlow draws a soft neon glow along the edges of your display (over the menu bar and around the
 notch). Colors come from the album art of whatever is playing in Spotify, Apple Music or a YouTube
 Music tab. The motion comes from your Mac's actual audio output, from any app: the bass makes the glow pulse and bloom, and the vocals set how fast it chases around the
 screen. It lives in the menu bar and never takes clicks.
 
-## Requirements
+## Requirements (macOS)
 
 - macOS 14 Sonoma or later, Apple Silicon
 - Xcode 15+ or the Swift 5.9+ command-line tools
@@ -34,14 +45,15 @@ You only need to do this once.
 ## Build & run
 
 ```sh
+cd macos
 ./build.sh          # compile, sign, and launch EdgeGlow.app
 ./build.sh --dmg    # also package EdgeGlow.dmg
 ```
 
-- **VS Code:** `Cmd+Shift+B` runs `./build.sh` (see `.vscode/tasks.json`).
-- **Xcode:** open `Package.swift`. Running from Xcode skips the app bundle, so AppleEvents permission
+- **VS Code:** `Cmd+Shift+B` runs `macos/build.sh` (see `.vscode/tasks.json`).
+- **Xcode:** open `macos/Package.swift`. Running from Xcode skips the app bundle, so AppleEvents permission
   prompts work most reliably from `./build.sh`.
-- **SwiftPM:** `swift build` compiles the same sources.
+- **SwiftPM:** `swift build` (inside `macos/`) compiles the same sources.
 
 EdgeGlow needs two permissions, both under **System Settings → Privacy & Security**:
 
@@ -63,7 +75,47 @@ tccutil reset AppleEvents com.jplane6.edgeglow
 tccutil reset ScreenCapture com.jplane6.edgeglow
 ```
 
-## How it works
+## Windows
+
+Requirements: Windows 10 (version 2004 / build 19041) or Windows 11, x64. Nothing else to install: the
+release is a self-contained single `EdgeGlow.exe`.
+
+1. Download `EdgeGlow-Windows-x64.zip` from the latest GitHub Release and unzip it.
+2. Run `EdgeGlow.exe`. It lives in the system tray (click the icon for the control flyout).
+3. If SmartScreen warns that the app is unrecognized (it is open source and not code-signed), choose
+   **More info → Run anyway**.
+
+What maps to what on Windows:
+
+| Feature | macOS | Windows |
+|---------|-------|---------|
+| Tray / menu bar UI | `NSStatusItem` popover | `NotifyIcon` + dark flyout |
+| Click-through overlay | `NSPanel` | WPF window with `WS_EX_TRANSPARENT \| WS_EX_LAYERED \| WS_EX_TOPMOST \| WS_EX_TOOLWINDOW` |
+| Per-display glow | display UUID | monitor hardware ID (EDID/device interface) |
+| System audio | ScreenCaptureKit | WASAPI loopback (NAudio), no drivers needed |
+| Now Playing | AppleScript | `GlobalSystemMediaTransportControlsSessionManager` (Spotify, Apple Music, Chrome, Edge, Arc, ...) |
+| Rendering | SwiftUI Canvas | SkiaSharp |
+
+The audio DSP (4 s rolling auto-gain, FFT bass/vocal bands, envelope followers), Cloud Sync (Deezer BPM +
+LRCLIB lyrics), the album-art palette extractor, the four animation styles and the spring-mass edge physics
+are ports of the macOS code with the same constants. The notch-aware bezel is macOS-only (no Windows
+equivalent), so the Windows bezel is always a rounded rectangle.
+
+Build it yourself (on Windows, with the .NET 8 SDK):
+
+```powershell
+cd windows
+./build.ps1            # -> windows/dist/EdgeGlow.exe and EdgeGlow-Windows-x64.zip
+```
+
+Settings are stored in `%APPDATA%\EdgeGlow\settings.json`.
+
+## Releases
+
+Pushing a tag such as `v1.0.0` (or running the **Release** workflow manually with a `tag` input) builds both
+platforms on GitHub Actions and attaches `EdgeGlow-Windows-x64.zip` and `EdgeGlow.dmg` to the release.
+
+## How it works (macOS)
 
 | File | Role |
 | --- | --- |

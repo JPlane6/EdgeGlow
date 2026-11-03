@@ -4,7 +4,7 @@
         {
             "label": "Build & Run EdgeGlow",
             "type": "shell",
-            "command": "./build.sh",
+            "command": "cd macos && ./build.sh",
             "group": {
                 "kind": "build",
                 "isDefault": true
@@ -19,14 +19,14 @@
         {
             "label": "Build EdgeGlow DMG",
             "type": "shell",
-            "command": "./build.sh --dmg",
+            "command": "cd macos && ./build.sh --dmg",
             "group": "build",
             "problemMatcher": "$swiftc"
         },
         {
             "label": "swift build",
             "type": "shell",
-            "command": "swift build",
+            "command": "cd macos && swift build",
             "group": "build",
             "problemMatcher": "$swiftc"
         }
