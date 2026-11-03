@@ -69,3 +69,11 @@ build/
 
 EdgeGlow.app/
 EdgeGlow.dmg
+
+# Windows build products
+windows/publish/
+windows/dist/
+windows/**/bin/
+windows/**/obj/
+.vs/
+*.user

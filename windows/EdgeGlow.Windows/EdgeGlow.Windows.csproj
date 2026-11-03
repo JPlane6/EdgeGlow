@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- 19041 (Windows 10 2004) is the first SDK that projects GlobalSystemMediaTransportControlsSessionManager. -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <!-- WPF + WinForms share type names (Application, Color, ...); explicit usings keep them unambiguous. -->
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <!-- WPF needs PerMonitorV2 in the manifest; the WinForms analyzer wants it set via an API instead. -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
+
+    <AssemblyName>EdgeGlow</AssemblyName>
+    <RootNamespace>EdgeGlow</RootNamespace>
+    <Product>EdgeGlow</Product>
+    <Company>EdgeGlow</Company>
+    <Version>1.0.0</Version>
+    <Copyright>MIT License</Copyright>
+
+    <ApplicationIcon>..\..\assets\AppIcon.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!-- Single self-contained exe (dotnet publish -r win-x64 ...): no .NET runtime install required. -->
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>embedded</DebugType>
+    <PublishTrimmed>false</PublishTrimmed>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <TieredPGO>true</TieredPGO>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" Version="2.88.8" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Same icon, embedded so the tray NotifyIcon can load it. -->
+    <EmbeddedResource Include="..\..\assets\AppIcon.ico" LogicalName="AppIcon.ico" />
+  </ItemGroup>
+
+</Project>

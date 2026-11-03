@@ -1,0 +1,99 @@
+name: Release (Windows + macOS)
+
+# Builds EdgeGlow-Windows-x64.zip on a Windows runner and EdgeGlow.dmg on a macOS runner.
+#  - every push / manual run: build both and upload them as workflow artifacts
+#  - a pushed v* tag (or a manual run with a "tag" input): also attach both to a GitHub Release
+on:
+  push:
+    branches: [main, feat/windows-port]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create/update (e.g. v1.0.0). Leave empty to only build artifacts."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Work out version
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.tag }}"
+          if (-not $tag -and "${{ github.ref_type }}" -eq "tag") { $tag = "${{ github.ref_name }}" }
+          $version = if ($tag) { $tag.TrimStart("v") } else { "1.0.0" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Build
+        shell: pwsh
+        run: ./windows/build.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EdgeGlow-Windows-x64
+          path: windows/dist/EdgeGlow-Windows-x64.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS DMG
+    runs-on: macos-latest
+    # Hosted macOS runners are sometimes unavailable; give up early instead of queueing for 15 minutes.
+    timeout-minutes: 20
+    # The DMG is nice to have next to the Windows build, but must never block a Windows release.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build EdgeGlow.dmg
+        working-directory: macos
+        run: ./build.sh --dmg --no-launch
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EdgeGlow-macOS
+          path: macos/EdgeGlow.dmg
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [windows, macos]
+    # Run even if the (optional) macOS job failed, as long as Windows built.
+    if: ${{ always() && needs.windows.result == 'success' && (startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != '') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List files
+        run: ls -lR artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: EdgeGlow ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            artifacts/EdgeGlow-Windows-x64.zip
+            artifacts/EdgeGlow.dmg

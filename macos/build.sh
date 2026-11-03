@@ -42,6 +42,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<string>$NAME</string>
 	<key>CFBundleExecutable</key>
 	<string>$NAME</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.jplane6.edgeglow</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -71,6 +73,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
+
+echo "==> Installing app icon"
+ICON="../assets/AppIcon.icns"
+[ -f "$ICON" ] || { echo "error: $ICON missing (run assets/make_icons.sh)" >&2; exit 1; }
+cp "$ICON" "$RES_DIR/AppIcon.icns"
 
 echo "==> Compiling into $MACOS_DIR/$NAME"
 swiftc Sources/EdgeGlow/*.swift \
