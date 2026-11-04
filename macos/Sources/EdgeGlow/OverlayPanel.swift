@@ -1,7 +1,10 @@
 import AppKit
+import Combine
 
 /// Borderless panel that is allowed to cover the menu bar and notch.
 class OverlayPanel: NSPanel {
+    private var lockCancellable: AnyCancellable?
+
     // macOS normally pushes windows below the menu bar; returning the frame untouched lets the
     // overlay span the full display, notch included.
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
@@ -19,7 +22,9 @@ class OverlayPanel: NSPanel {
             backing: .buffered,
             defer: false
         )
-        level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 1)
+        // Floats above the lock screen / login window as well.
+        canBecomeVisibleWithoutLogin = true
+        level = .screenSaver
         backgroundColor = .clear
         isOpaque = false
         hasShadow = false
@@ -28,6 +33,16 @@ class OverlayPanel: NSPanel {
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
         animationBehavior = .none
+
+        // With "Show on Lock Screen" off, hide while locked and bring back on unlock.
+        let state = AppState.shared
+        lockCancellable = Publishers.CombineLatest(state.$screenLocked, state.$showOnLockScreen)
+            .map { locked, show in !(locked && !show) }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] visible in
+                if visible { self?.orderFrontRegardless() } else { self?.orderOut(nil) }
+            }
     }
 }
 

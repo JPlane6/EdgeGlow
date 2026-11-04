@@ -12,6 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lyricsModel: LyricsModel?
     private var lyricsOverlays: LyricsOverlayManager?
     private var outsideClickMonitor: Any?
+    private var lockMonitor: LockScreenMonitor?
+    private var sleepBlocker: DisplaySleepBlocker?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let overlays = OverlayWindowManager(state: state)
@@ -41,10 +43,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lyricsOverlays.start()
         self.lyricsOverlays = lyricsOverlays
 
+        let lockMonitor = LockScreenMonitor(state: state)
+        lockMonitor.start()
+        self.lockMonitor = lockMonitor
+        let sleepBlocker = DisplaySleepBlocker(state: state)
+        sleepBlocker.start()
+        self.sleepBlocker = sleepBlocker
+
         Updater.shared.checkOnLaunch()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        sleepBlocker?.stop()
         media?.stop()
         audio?.stop()
         latency?.stop()
@@ -90,7 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         // Sit above the glow overlay, which lives just above the status bar level.
-        popover.contentViewController?.view.window?.level = .popUpMenu
+        popover.contentViewController?.view.window?.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.closePopover()
         }

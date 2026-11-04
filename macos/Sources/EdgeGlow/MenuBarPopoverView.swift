@@ -646,6 +646,7 @@ struct MenuBarPopoverView: View {
     private var togglesCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             toggleRow("Keep Idle Glow When Paused", caption: "Soft breathing glow when nothing is playing", isOn: $state.idleWhenPaused)
+            toggleRow("Show on Lock Screen", caption: "Keep lyrics and glow visible while the Mac is locked", isOn: $state.showOnLockScreen)
             toggleRow("Kinetic Physics", caption: state.animationStyle == .sparksOnly
                       ? "Always on in Sparks Only"
                       : "Edge bounce, sparks and impact flashes on the bass", isOn: $state.kineticEffects)

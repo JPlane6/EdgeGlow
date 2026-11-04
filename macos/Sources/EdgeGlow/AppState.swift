@@ -169,6 +169,7 @@ final class AppState: ObservableObject {
         static let reactivity = "reactivity"
         static let intensity = "intensity"
         static let idleWhenPaused = "idleWhenPaused"
+        static let showOnLockScreen = "showOnLockScreen"
         static let useCustomColors = "useCustomColors"
         static let customPrimary = "customPrimary"
         static let customSecondary = "customSecondary"
@@ -239,6 +240,10 @@ final class AppState: ObservableObject {
     @Published var reactivity: Double { didSet { defaults.set(reactivity, forKey: Key.reactivity) } }
     @Published var intensity: Double { didSet { defaults.set(intensity, forKey: Key.intensity) } }
     @Published var idleWhenPaused: Bool { didSet { defaults.set(idleWhenPaused, forKey: Key.idleWhenPaused) } }
+    /// Keep the overlays visible over the macOS lock screen.
+    @Published var showOnLockScreen: Bool { didSet { defaults.set(showOnLockScreen, forKey: Key.showOnLockScreen) } }
+    /// True while the screen is locked (driven by LockScreenMonitor).
+    @Published var screenLocked = false
     @Published var useCustomColors: Bool { didSet { defaults.set(useCustomColors, forKey: Key.useCustomColors) } }
     @Published var customPrimary: RGBColor { didSet { defaults.set(customPrimary.array, forKey: Key.customPrimary) } }
     @Published var customSecondary: RGBColor { didSet { defaults.set(customSecondary.array, forKey: Key.customSecondary) } }
@@ -267,6 +272,7 @@ final class AppState: ObservableObject {
             Key.reactivity: 1.0,
             Key.intensity: 0.85,
             Key.idleWhenPaused: true,
+            Key.showOnLockScreen: true,
             Key.useCustomColors: false,
             Key.kineticEffects: true,
             Key.cometLength: 0.18,
@@ -278,6 +284,7 @@ final class AppState: ObservableObject {
         reactivity = defaults.double(forKey: Key.reactivity)
         intensity = defaults.double(forKey: Key.intensity)
         idleWhenPaused = defaults.bool(forKey: Key.idleWhenPaused)
+        showOnLockScreen = defaults.bool(forKey: Key.showOnLockScreen)
         useCustomColors = defaults.bool(forKey: Key.useCustomColors)
         kineticEffects = defaults.bool(forKey: Key.kineticEffects)
         customPrimary = RGBColor(array: defaults.array(forKey: Key.customPrimary) as? [Double]) ?? .neonCyan
