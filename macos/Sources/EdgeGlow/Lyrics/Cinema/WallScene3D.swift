@@ -148,7 +148,7 @@ final class WallScene3D: Scene3D {
             let c = V3(Float(minX + maxX) / 2, -Float(y), 40)
             let widthWorld = Float(maxX - minX)
             let pr = max(160, U * 3.0)
-            list.sprite(.plume, at: c, radius: pr, color: V4(0, 0, 0, 1), extra: 0.34, stretch: max(2.6, widthWorld * 0.8 / pr), layer: .back, camera: frame)
+            list.sprite(.plume, at: c, radius: pr, color: V4(0.03, 0.03, 0.047, 1), extra: 0.78, stretch: max(2.6, widthWorld * 0.8 / pr), layer: .back, camera: frame)
         }
 
         for li in lo...hi {

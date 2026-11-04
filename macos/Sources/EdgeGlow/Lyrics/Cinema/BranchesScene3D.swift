@@ -88,7 +88,7 @@ final class BranchesScene3D: Scene3D {
 
         // Dark plume behind the active leaf and the growing tip.
         let focalPoint = a >= 0 ? (nodes[a] + tipPoint) * 0.5 + up * 40 : tipPoint
-        list.sprite(.plume, at: focalPoint, radius: 160, color: V4(0, 0, 0, 1), extra: 0.34, stretch: 2.2, layer: .back, camera: frame)
+        list.sprite(.plume, at: focalPoint, radius: 160, color: V4(0.03, 0.03, 0.047, 1), extra: 0.78, stretch: 2.2, layer: .back, camera: frame)
 
         // Twigs behind the trunk.
         if a >= 0 {
@@ -112,8 +112,8 @@ final class BranchesScene3D: Scene3D {
                     let u = Float(s) / Float(steps)
                     let col = hl + (sec - hl) * u
                     let width = (live ? 8 : (2.4 + 4.0 * recency)) * px
-                    list.ribbon(from: prev, to: q, width: width * 2.4, color: V4(0, 0, 0, live ? 0.4 : 0.26 + 0.12 * recency), glow: 0, layer: .back, camera: frame)
-                    list.ribbon(from: prev, to: q, width: width, color: V4(col.x, col.y, col.z, live ? 1 : 0.4 + 0.55 * recency), glow: live ? 1.4 : 0.6, camera: frame)
+                    ribbonU(list, from: prev, to: q, width: width * 2.4, color: V4(0, 0, 0, live ? 0.4 : 0.26 + 0.12 * recency), glow: 0, layer: .back, camera: frame)
+                    ribbonU(list, from: prev, to: q, width: width, color: V4(col.x, col.y, col.z, live ? 1 : 0.4 + 0.55 * recency), glow: live ? 1.4 : 0.6, camera: frame)
                     prev = q
                 }
             }
@@ -140,7 +140,7 @@ final class BranchesScene3D: Scene3D {
                 var color = V4(1, 1, 1, isActive ? 1 : (i < a ? 0.42 : 0.18))
                 color.w *= dof.fade
                 let mod = engine.wordMod(index: i, input: input, isActive: isActive)
-                list.sprite(.plume, at: labelCenter, radius: height * 0.8, color: V4(0, 0, 0, 1), extra: isActive ? 0.34 : 0.12, stretch: 2.4, layer: .back, camera: frame)
+                list.sprite(.plume, at: labelCenter, radius: height * 0.8, color: V4(0, 0, 0, 1), extra: isActive ? 0.6 : 0.3, stretch: 2.4, layer: .back, camera: frame)
                 drawWord(words[i].text, at: labelCenter, height: height, right: right, up: up, color: color, mod: mod,
                          blur: (isActive || i < a) ? 0 : 1.5 + min(2.5, dof.blur), atlas: atlas, input: input, list: list, frame: frame)
             }
@@ -177,7 +177,7 @@ final class BranchesScene3D: Scene3D {
                 let u = 1 - t
                 let q = o * (u * u) + mid * (2 * u * t) + end * (t * t)
                 let px = perPixel(frame.depth(of: q), frame)
-                list.ribbon(from: prev, to: q, width: 2.2 * px, color: V4(sec.x, sec.y, sec.z, 0.4 + 0.4 * recency), glow: 0.4, camera: frame)
+                ribbonU(list, from: prev, to: q, width: 2.2 * px, color: V4(sec.x, sec.y, sec.z, 0.4 + 0.4 * recency), glow: 0.4, camera: frame)
                 prev = q
             }
             list.sprite(.glow, at: end, radius: 12, color: V4(sec.x, sec.y, sec.z, 0.2 + 0.5 * recency), extra: 2, camera: frame)

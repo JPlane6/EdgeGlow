@@ -94,7 +94,7 @@ final class ConstellationScene3D: Scene3D {
 
         // Dark plume behind the active label.
         let activeCenter = nodes[a] + up * 70
-        list.sprite(.plume, at: activeCenter, radius: 150, color: V4(0, 0, 0, 1), extra: 0.34, stretch: 2.2, layer: .back, camera: frame)
+        list.sprite(.plume, at: activeCenter, radius: 150, color: V4(0.03, 0.03, 0.047, 1), extra: 0.78, stretch: 2.2, layer: .back, camera: frame)
 
         // Filaments and struts.
         for i in max(1, lo)...max(1, hi) where i < nodes.count && i > 0 {
@@ -108,12 +108,12 @@ final class ConstellationScene3D: Scene3D {
             let mid = (p0 + p1) * 0.5
             let px = perPixel(frame.depth(of: mid), frame)
             // Faint skeleton for what is still to come.
-            list.ribbon(from: p0, to: p1, width: 2.0 * px, color: V4(hl.x, hl.y, hl.z, 0.32), glow: 0.3, camera: frame)
+            ribbonU(list, from: p0, to: p1, width: 2.0 * px, color: V4(hl.x, hl.y, hl.z, 0.32), glow: 0.3, camera: frame)
             if i >= 2 {
-                list.ribbon(from: nodes[i - 2], to: p1, width: 1.6 * px, color: V4(sec.x, sec.y, sec.z, 0.5), glow: 0.3, camera: frame)
+                ribbonU(list, from: nodes[i - 2], to: p1, width: 1.6 * px, color: V4(sec.x, sec.y, sec.z, 0.5), glow: 0.3, camera: frame)
             }
             if i >= 3, simd_length(nodes[i - 3] - p1) < 1100 {
-                list.ribbon(from: nodes[i - 3], to: p1, width: 1.3 * px, color: V4(hl.x, hl.y, hl.z, 0.34), glow: 0.2, camera: frame)
+                ribbonU(list, from: nodes[i - 3], to: p1, width: 1.3 * px, color: V4(hl.x, hl.y, hl.z, 0.34), glow: 0.2, camera: frame)
             }
             guard traced > 0.001 else { continue }
             let live = from == a
@@ -123,8 +123,8 @@ final class ConstellationScene3D: Scene3D {
             let width = (live ? 2.6 : 1.5) * px
             let col = from % 2 == 0 ? hl : sec
             // Dark underlay so the luminous filament stays visible over a bright wallpaper.
-            list.ribbon(from: p0, to: end, width: width * 3.0, color: V4(0, 0, 0, live ? 0.42 : 0.3), glow: 0, layer: .back, camera: frame)
-            list.ribbon(from: p0, to: end, width: width * 1.6, color: V4(col.x, col.y, col.z, alpha), glow: live ? 1.2 : 0.5, camera: frame)
+            ribbonU(list, from: p0, to: end, width: width * 3.0, color: V4(0, 0, 0, live ? 0.42 : 0.3), glow: 0, layer: .back, camera: frame)
+            ribbonU(list, from: p0, to: end, width: width * 1.6, color: V4(col.x, col.y, col.z, alpha), glow: live ? 1.2 : 0.5, camera: frame)
             if live {
                 list.sprite(.glow, at: end, radius: 26, color: V4(hl.x, hl.y, hl.z, 0.95), extra: 2, camera: frame)
             }
@@ -156,7 +156,7 @@ final class ConstellationScene3D: Scene3D {
             var color = V4(1, 1, 1, isActive ? 1 : (past ? 0.42 : 0.18))
             color.w *= dof.fade
             let blur: Float = (isActive || past) ? 0 : 1.5 + min(2.5, dof.blur)
-            list.sprite(.plume, at: labelCenter, radius: height * 0.8, color: V4(0, 0, 0, 1), extra: isActive ? 0.34 : 0.12, stretch: 2.4, layer: .back, camera: frame)
+            list.sprite(.plume, at: labelCenter, radius: height * 0.8, color: V4(0, 0, 0, 1), extra: isActive ? 0.6 : 0.3, stretch: 2.4, layer: .back, camera: frame)
             drawWord(word.text, at: labelCenter, height: height, right: right, up: up, color: color, mod: mod, blur: blur,
                      atlas: atlas, input: input, list: list, frame: frame)
             _ = focus

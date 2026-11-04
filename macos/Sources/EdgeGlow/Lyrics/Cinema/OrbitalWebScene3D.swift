@@ -67,7 +67,7 @@ final class OrbitalWebScene3D: Scene3D {
         let rippleAge = Float(input.time - rippleClock)
 
         // Soft dark vignette under the disc so thin lines stay readable on any wallpaper.
-        list.sprite(.plume, at: V3(0, -6, 0), radius: Float(geo.outerRadius) * 1.1, color: V4(0, 0, 0, 1), extra: 0.2, stretch: 1.0, layer: .back, camera: frame)
+        list.sprite(.plume, at: V3(0, -6, 0), radius: Float(geo.outerRadius) * 1.1, color: V4(0.03, 0.03, 0.047, 1), extra: 0.6, stretch: 1.0, layer: .back, camera: frame)
 
         // Spokes.
         for sp in 0..<geo.spokes {
@@ -77,7 +77,7 @@ final class OrbitalWebScene3D: Scene3D {
             let from = dir * Float(geo.innerRadius * 0.4), to = dir * Float(geo.outerRadius)
             let px = perPixel(frame.depth(of: (from + to) * 0.5), frame)
             let c: V4 = lit ? V4(hl.x, hl.y, hl.z, 0.8) : V4(1, 1, 1, 0.42)
-            list.ribbon(from: from, to: to, width: (lit ? 2.0 : 1.4) * px, color: c, glow: lit ? 0.7 : 0.2, camera: frame)
+            ribbonU(list, from: from, to: to, width: (lit ? 2.0 : 1.4) * px, color: c, glow: lit ? 0.7 : 0.2, camera: frame)
         }
 
         // Rings: 72-segment polylines with a bass ripple that raises each ring in turn.
@@ -93,7 +93,7 @@ final class OrbitalWebScene3D: Scene3D {
                 if let q = prev {
                     let px = perPixel(frame.depth(of: (p + q) * 0.5), frame)
                     let c: V4 = lit ? V4(sec.x, sec.y, sec.z, 0.7 + 0.3 * wave) : V4(1, 1, 1, 0.38 + 0.4 * wave)
-                    list.ribbon(from: q, to: p, width: (lit ? 2.0 : 1.4) * px, color: c, glow: 0.2 + wave, camera: frame)
+                    ribbonU(list, from: q, to: p, width: (lit ? 2.0 : 1.4) * px, color: c, glow: 0.2 + wave, camera: frame)
                 }
                 prev = p
             }
@@ -108,7 +108,7 @@ final class OrbitalWebScene3D: Scene3D {
             let end = p0 + (p1 - p0) * Float(traced)
             let px = perPixel(frame.depth(of: (p0 + end) * 0.5), frame)
             let live = from == a
-            list.ribbon(from: p0, to: end, width: (live ? 2.6 : 1.4) * px, color: V4(hl.x, hl.y, hl.z, live ? 0.95 : 0.45), glow: live ? 1.2 : 0.4, camera: frame)
+            ribbonU(list, from: p0, to: end, width: (live ? 2.6 : 1.4) * px, color: V4(hl.x, hl.y, hl.z, live ? 0.95 : 0.45), glow: live ? 1.2 : 0.4, camera: frame)
             if live { list.sprite(.glow, at: end, radius: 24, color: V4(hl.x, hl.y, hl.z, 0.95), extra: 2, camera: frame) }
         }
 
@@ -133,7 +133,7 @@ final class OrbitalWebScene3D: Scene3D {
             let center = p + up * (isActive ? 62 : 44)
             var color = V4(1, 1, 1, isActive ? 1 : (past ? 0.42 : 0.18))
             color.w *= dof.fade
-            list.sprite(.plume, at: center, radius: height * 0.8, color: V4(0, 0, 0, 1), extra: isActive ? 0.34 : 0.1, stretch: 2.4, layer: .back, camera: frame)
+            list.sprite(.plume, at: center, radius: height * 0.8, color: V4(0, 0, 0, 1), extra: isActive ? 0.6 : 0.3, stretch: 2.4, layer: .back, camera: frame)
             drawWord(words[i].text, at: center, height: height, right: right, up: up, color: color, mod: mod,
                      blur: (isActive || past) ? 0 : 1.5 + min(2.5, dof.blur), atlas: atlas, input: input, list: list, frame: frame)
         }

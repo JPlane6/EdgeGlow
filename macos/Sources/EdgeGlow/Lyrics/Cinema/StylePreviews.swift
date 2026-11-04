@@ -115,7 +115,9 @@ enum StylePreviews {
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
         let colors = [CGColor(red: 0.97, green: 0.94, blue: 0.82, alpha: 1), CGColor(red: 0.66, green: 0.84, blue: 0.98, alpha: 1), CGColor(red: 0.99, green: 0.78, blue: 0.66, alpha: 1)]
-        if let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: colors as CFArray, locations: [0, 0.5, 1]) {
+        if ProcessInfo.processInfo.environment["EDGEGLOW_PREVIEW_BG"] == "white" {
+            ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        } else if let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: colors as CFArray, locations: [0, 0.5, 1]) {
             ctx.drawLinearGradient(gradient, start: CGPoint(x: 0, y: CGFloat(h)), end: CGPoint(x: CGFloat(w), y: 0), options: [])
         }
         ctx.draw(overlay, in: CGRect(x: 0, y: 0, width: w, height: h))

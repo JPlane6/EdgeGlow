@@ -130,11 +130,16 @@ final class LyricsMetalRenderer {
             if (blur < 0.02) {
                 a = tex.sample(smp, in.uv).r;
             } else {
-                float2 px = float2(blur * 2.6 / 3072.0);
-                a = tex.sample(smp, in.uv).r * 0.36
-                  + (tex.sample(smp, in.uv + float2(px.x, 0)).r + tex.sample(smp, in.uv - float2(px.x, 0)).r
-                   + tex.sample(smp, in.uv + float2(0, px.y)).r + tex.sample(smp, in.uv - float2(0, px.y)).r) * 0.16;
-                a *= 1.0 - 0.25 * blur;
+                // 13-tap disc: centre, an inner ring at half radius and an outer ring (smooth, no ghost copies).
+                float r1 = blur * 2.6 / 3072.0, r0 = r1 * 0.5, d = r1 * 0.7071;
+                a = tex.sample(smp, in.uv).r * 0.20;
+                a += (tex.sample(smp, in.uv + float2(r0, 0)).r + tex.sample(smp, in.uv - float2(r0, 0)).r
+                    + tex.sample(smp, in.uv + float2(0, r0)).r + tex.sample(smp, in.uv - float2(0, r0)).r) * 0.10;
+                a += (tex.sample(smp, in.uv + float2(r1, 0)).r + tex.sample(smp, in.uv - float2(r1, 0)).r
+                    + tex.sample(smp, in.uv + float2(0, r1)).r + tex.sample(smp, in.uv - float2(0, r1)).r) * 0.055;
+                a += (tex.sample(smp, in.uv + float2(d, d)).r + tex.sample(smp, in.uv + float2(-d, d)).r
+                    + tex.sample(smp, in.uv + float2(d, -d)).r + tex.sample(smp, in.uv + float2(-d, -d)).r) * 0.055;
+                a *= max(0.4, 1.0 - 0.12 * blur);
             }
         } else if (kind == 1) {
             float x = abs(in.across);

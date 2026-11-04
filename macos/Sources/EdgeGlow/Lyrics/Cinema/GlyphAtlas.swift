@@ -10,12 +10,15 @@ final class GlyphAtlas {
         var uv: SIMD4<Float>
         /// Size of the glyph box in raster pixels.
         var size: SIMD2<Float>
+        /// uv rectangle including the transparent padding (room for the glyph shadow), and the padding in texels.
+        var uvPad: SIMD4<Float> = .zero
+        var pad: Float = 0
     }
 
     static let rasterSize: CGFloat = 168
     private static let textSide = 3072
     private static let iconSide = 1024
-    private static let pad = 4
+    private static let pad = 24
 
     let device: MTLDevice
     let textTexture: MTLTexture
@@ -63,7 +66,7 @@ final class GlyphAtlas {
         let size = attributed.size()
         let pad = Self.pad
         let w = Int(ceil(size.width)) + pad * 2, h = Int(ceil(size.height)) + pad * 2
-        guard w < Self.textSide, h < 640 else { return nil }
+        guard w < Self.textSide, h < 700 else { return nil }
         if textShelf.place(w, h) == nil { resetText() }
         guard let origin = textShelf.place(w, h) else { return nil }
 
@@ -83,7 +86,9 @@ final class GlyphAtlas {
         let s = Float(Self.textSide)
         let entry = Entry(uv: SIMD4(Float(origin.0 + pad) / s, Float(origin.1 + pad) / s,
                                     Float(origin.0 + w - pad) / s, Float(origin.1 + h - pad) / s),
-                          size: SIMD2(Float(w - pad * 2), Float(h - pad * 2)))
+                          size: SIMD2(Float(w - pad * 2), Float(h - pad * 2)),
+                          uvPad: SIMD4(Float(origin.0) / s, Float(origin.1) / s, Float(origin.0 + w) / s, Float(origin.1 + h) / s),
+                          pad: Float(pad))
         textEntries[key] = entry
         return entry
     }

@@ -63,6 +63,27 @@ class Scene3D {
             list.quad(.text, uv: entry.uv, center: center - d, right: r * halfW, up: u * halfH, color: V4(1, 0.1, 0.25, color.w * 0.8), blur: blur, layer: .glow, camera: frame)
             list.quad(.text, uv: entry.uv, center: center + d, right: r * halfW, up: u * halfH, color: V4(0.1, 0.9, 1, color.w * 0.8), blur: blur, layer: .glow, camera: frame)
         }
+        // Legibility over any wallpaper: a crisp 1.5 px dark outline plus a wide 14 px ambient shadow, both under
+        // the word (and under its accent glow) so white letters separate from white backgrounds.
+        if color.w > 0.04, entry.pad > 0 {
+            let k = min(1, color.w * 2.5)
+            let px = perPixel(frame.depth(of: center), frame)
+            let sx = s * mod.scale.x * mod.tracking, sy = s * mod.scale.y
+            let padHalfW = halfW + entry.pad * sx, padHalfH = halfH + entry.pad * sy
+            let texelsPerPx = px / max(s, 0.0001)
+            func shadow(_ radiusPx: Float, _ alpha: Float) {
+                let b = min(radiusPx * texelsPerPx / 2.6, entry.pad / 2.6 * 0.9)
+                list.quad(.text, uv: entry.uvPad, center: center, right: r * padHalfW, up: u * padHalfH,
+                          color: V4(0, 0, 0, alpha * k), blur: max(b, 0.05), extra: 0, layer: .back, camera: frame)
+            }
+            shadow(14, 0.75)
+            shadow(6, 0.5)
+            let o = 1.5 * px
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (0.7, 0.7), (-0.7, 0.7), (0.7, -0.7), (-0.7, -0.7)] as [(Float, Float)] {
+                list.quad(.text, uv: entry.uv, center: center + r * (dx * o) + u * (dy * o), right: r * halfW, up: u * halfH,
+                          color: V4(0, 0, 0, 0.92 * k), blur: 0, extra: 0, layer: .back, camera: frame)
+            }
+        }
         list.quad(.text, uv: entry.uv, center: center, right: r * halfW, up: u * halfH, color: color, blur: blur, extra: 0, wave: wave, layer: layer, camera: frame)
         return w
     }
@@ -91,6 +112,15 @@ class Scene3D {
             return .symbol(symbol)
         }
         return WordVisualResolver.shared.visual(for: input.lyrics.words[index].text)
+    }
+
+    /// A glowing filament over a dark 3 px under-stroke (65 % black), so lines hold up on a pure white screen.
+    func ribbonU(_ list: DrawList, from a: V3, to b: V3, width: Float, color: V4, glow: Float = 0.6, layer: DrawLayer = .glow, camera: CameraFrame) {
+        if layer != .back {
+            let px = perPixel(camera.depth(of: (a + b) * 0.5), camera)
+            list.ribbon(from: a, to: b, width: width + 3 * px, color: V4(0, 0, 0, 0.65 * min(1, color.w * 1.6)), glow: 0, layer: .back, camera: camera)
+        }
+        list.ribbon(from: a, to: b, width: width, color: color, glow: glow, layer: layer, camera: camera)
     }
 
     func hash(_ i: Int) -> Float { Float(CanvasKitHash.hash(i)) }

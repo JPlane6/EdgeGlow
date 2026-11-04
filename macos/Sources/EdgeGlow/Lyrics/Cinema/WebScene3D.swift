@@ -167,7 +167,7 @@ final class WebScene3D: Scene3D {
         let byID = Dictionary(uniqueKeysWithValues: lyrics.words.map { ($0.id, $0) })
 
         if let activeID, let n = nodes[activeID] {
-            list.sprite(.plume, at: n.pos, radius: 240, color: V4(0, 0, 0, 1), extra: 0.34, stretch: 2.1, layer: .back, camera: frame)
+            list.sprite(.plume, at: n.pos, radius: 240, color: V4(0.03, 0.03, 0.047, 1), extra: 0.78, stretch: 2.1, layer: .back, camera: frame)
         }
 
         // Silk threads with shockwave ripples racing along them.
@@ -190,8 +190,8 @@ final class WebScene3D: Scene3D {
             let involves = a == activeID || b == activeID
             let col = (a + b) % 2 == 0 ? hl : sec
             let width = (1.1 + 3.2 * wave + (involves ? 1.0 : 0)) * px
-            list.ribbon(from: na.pos, to: nb.pos, width: width * 2.4, color: V4(0, 0, 0, 0.18 * alpha), glow: 0, layer: .back, camera: frame)
-            list.ribbon(from: na.pos, to: nb.pos, width: width, color: V4(col.x, col.y, col.z, alpha * (0.42 + 0.5 * min(1, wave) + (involves ? 0.2 : 0))),
+            ribbonU(list, from: na.pos, to: nb.pos, width: width * 2.4, color: V4(0, 0, 0, 0.18 * alpha), glow: 0, layer: .back, camera: frame)
+            ribbonU(list, from: na.pos, to: nb.pos, width: width, color: V4(col.x, col.y, col.z, alpha * (0.42 + 0.5 * min(1, wave) + (involves ? 0.2 : 0))),
                         glow: 0.5 + wave, camera: frame)
         }
 
@@ -207,7 +207,7 @@ final class WebScene3D: Scene3D {
             var color = V4(1, 1, 1, n.alpha * (isActive ? 1 : (reached ? 0.42 : 0.18)))
             color.w *= dof.fade
             list.sprite(.glow, at: n.pos, radius: 16, color: V4(hl.x, hl.y, hl.z, 0.4 * n.alpha), extra: 2, camera: frame)
-            list.sprite(.plume, at: n.pos + V3(0, 0, 4), radius: fontSize * 0.95, color: V4(0, 0, 0, 1), extra: (isActive ? 0.32 : 0.1) * n.alpha,
+            list.sprite(.plume, at: n.pos + V3(0, 0, 4), radius: fontSize * 0.95, color: V4(0, 0, 0, 1), extra: (isActive ? 0.6 : 0.3) * n.alpha,
                         stretch: max(1.3, n.halfWidth * 2 / fontSize * 0.7), layer: .back, camera: frame)
             if isActive {
                 list.sprite(.glow, at: n.pos, radius: 120 + 40 * Float(input.bass), color: V4(hl.x, hl.y, hl.z, 0.5), extra: 2.2, camera: frame)
