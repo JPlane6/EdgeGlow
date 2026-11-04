@@ -37,6 +37,8 @@ public sealed class LyricsModel : IDisposable
         _cts?.Cancel();
     }
 
+    public const string NotFoundStatus = "No synced lyrics found";
+
     /// <summary>The lyrics currently shown (romanized when the toggle is on), or null.</summary>
     public TimedLyrics? Lyrics { get { lock (_lock) return _shown; } }
 
@@ -88,7 +90,7 @@ public sealed class LyricsModel : IDisposable
                 _state.VocalLock.SetWordStarts(found.Words.Select(w => w.Start).OrderBy(x => x).ToArray());
                 _state.LyricsStatus = $"Synced lyrics - {found.Source}";
             }
-            else _state.LyricsStatus = "No synced lyrics found";
+            else _state.LyricsStatus = NotFoundStatus;
         }
     }
 

@@ -212,11 +212,15 @@ public sealed class MediaBridge : IDisposable
         var audible = _state.SystemAudioActive;
         if (nativeSpotify != null) Choose(nativeSpotify);
         else if (nativeApple != null) Choose(nativeApple);
+        else if (readings.FirstOrDefault(r => r.Playing && r.Source is MediaSource.Browser or MediaSource.SystemAudio) is { } other)
+        {
+            // Any session SMTC reports as Playing wins over paused or ghost sessions, whether or not the
+            // audio tap has noticed sound yet.
+            Choose(other);
+        }
         else if (audible)
         {
-            var other = readings.FirstOrDefault(r => r.Playing && r.Source is MediaSource.Browser or MediaSource.SystemAudio);
-            if (other != null) Choose(other);
-            else { source = MediaSource.SystemAudio; playingNow = true; }
+            source = MediaSource.SystemAudio; playingNow = true;
         }
         else
         {
