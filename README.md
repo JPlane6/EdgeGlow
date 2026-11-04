@@ -110,6 +110,29 @@ cd windows
 
 Settings are stored in `%APPDATA%\EdgeGlow\settings.json`.
 
+## Lyrics (macOS)
+
+EdgeGlow shows synced lyrics next to the edge glow. The popover's mode picker chooses **Both**, **Glow Only**,
+**Lyrics Only** or **Off** (Off stops rendering, audio capture and media polling).
+
+- **11 styles**, all drawn by one Metal renderer with a real 3D perspective camera: Ship, Visual, Fisheye,
+  Fisheye Visual, Constellation, Branches, Web, Codestyle Visual, Constellation 3D, HyperShip 3D, Orbital Web 3D.
+  A semantic engine tags words (speed, impact, fire, heart, cosmic, vibe) and adds restrained accents and SF Symbol icons.
+- **Fonts:** SF Pro, SF Rounded, New York, Helvetica Neue, Avenir Next, Futura, Didot.
+- **Sources:** Spotify and Apple Music (exact position), plus browser tabs (YouTube, YouTube Music, SoundCloud,
+  JioSaavn, Gaana, ...) through the HTML5 playhead when "Allow JavaScript from Apple Events" is on, or an
+  audio-gated stopwatch otherwise.
+- **Lyrics:** LRCLIB (exact, then ranked fuzzy search, then plain lyrics spread over the song) and NetEase.
+  Messy Bollywood / YouTube metadata is cleaned first, and Hindi / Punjabi / Urdu lyrics can be romanized
+  (toggle in the popover). About 170 Hinglish words map to icons.
+- **Sync is automatic, there is no offset slider:** player poll latency is compensated, the output route's
+  latency (CoreAudio, +165 ms detected for Bluetooth) is subtracted, and a vocal-onset lock (300 Hz-3.4 kHz) trims +/-200 ms.
+- **Audio:** a CoreAudio process tap (macOS 14.2+; macOS asks once for "System Audio Recording"), with a
+  ScreenCaptureKit audio-only fallback.
+
+Debug helpers: `EdgeGlow --render-style-previews <dir>` renders every style to PNG,
+`EdgeGlow --test-lyrics` runs the lyric lookup against a few Hindi / Punjabi tracks.
+
 ## Releases
 
 Pushing a tag such as `v1.0.0` (or running the **Release** workflow manually with a `tag` input) builds both
