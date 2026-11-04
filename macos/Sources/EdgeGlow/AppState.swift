@@ -93,6 +93,62 @@ enum AnimationStyle: String, CaseIterable, Identifiable {
     var usesComets: Bool { self == .chasing || self == .symmetry }
 }
 
+/// Which of the two overlays are running. `off` is full standby: no render loops, no audio tap, no polling.
+enum DisplayMode: String, CaseIterable, Identifiable {
+    case both
+    case glowOnly
+    case lyricsOnly
+    case off
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .both: return "Both"
+        case .glowOnly: return "Glow"
+        case .lyricsOnly: return "Lyrics"
+        case .off: return "Off"
+        }
+    }
+
+    var caption: String {
+        switch self {
+        case .both: return "Rim lighting and synced lyrics"
+        case .glowOnly: return "Rim lighting only, lyrics paused"
+        case .lyricsOnly: return "Synced lyrics only, rim lighting paused"
+        case .off: return "Standby: render loops and audio capture are stopped"
+        }
+    }
+
+    var glowOn: Bool { self == .both || self == .glowOnly }
+    var lyricsOn: Bool { self == .both || self == .lyricsOnly }
+}
+
+/// The current output route and the playback delay EdgeGlow compensates for (read-only, automatic).
+struct AudioRouteInfo: Equatable {
+    var deviceName: String
+    var transport: AudioTransport
+    /// Seconds between the Mac handing audio to the output and the sound reaching the listener.
+    var latency: Double
+
+    var offsetMilliseconds: Int { Int((latency * 1000).rounded()) }
+    var summary: String { "\(deviceName) (Auto -\(offsetMilliseconds)ms)" }
+}
+
+enum AudioTransport: Equatable {
+    case builtIn, bluetooth, usb, airPlay, other
+
+    var symbol: String {
+        switch self {
+        case .builtIn: return "laptopcomputer"
+        case .bluetooth: return "headphones"
+        case .usb: return "cable.connector"
+        case .airPlay: return "airplayaudio"
+        case .other: return "speaker.wave.2"
+        }
+    }
+}
+
 /// A connected display as shown in the popover's display picker.
 struct DisplayInfo: Identifiable, Equatable {
     /// Stable per-monitor identifier (display UUID), so the choice survives reboots and replugging.
@@ -120,6 +176,12 @@ final class AppState: ObservableObject {
         static let activeDisplays = "activeDisplays"
         static let kineticEffects = "kineticEffects"
         static let cometLength = "cometLength"
+        static let displayMode = "displayMode"
+        static let lyricStyle = "lyricStyle"
+        static let lyricFont = "lyricFont"
+        static let romanizeLyrics = "romanizeLyrics"
+        static let lyricTextScale = "lyricTextScale"
+        static let lyricVerticalPosition = "lyricVerticalPosition"
         // Removed settings, cleared on launch.
         static let legacyNotchGlowEnabled = "notchGlowEnabled"
         static let legacySelectedDisplayID = "selectedDisplayID"
@@ -138,6 +200,11 @@ final class AppState: ObservableObject {
     @Published var extractedPrimary = RGBColor.neonCyan
     @Published var extractedSecondary = RGBColor.neonMagenta
 
+    /// Length of the current track in seconds (0 when unknown).
+    @Published var trackDuration = 0.0
+    /// Tempo of the current track from Deezer, once the lookup finishes.
+    @Published var trackBPM: Double?
+
     /// Continuous track position for the current native player. Read at audio rate, so not @Published.
     let playbackClock = PlaybackClock()
     /// Tempo and lyric timing for the current track, used when the Mac itself is silent.
@@ -152,6 +219,13 @@ final class AppState: ObservableObject {
     @Published var levelSource: LevelSource = .none
     /// Bass/vocal energies; read by the renderer every frame, so not @Published.
     let audioLevels = AudioLevels()
+
+    /// Active output route and its automatically detected latency (driven by AudioLatencyDetector).
+    @Published var audioRoute: AudioRouteInfo?
+    /// Per-frame readable copy of the compensation (seconds); the lyric playhead subtracts it.
+    let audioLatency = AudioLatency()
+    /// Timing nudges learned from vocal onsets in the live audio.
+    let vocalLock = VocalOnsetLock()
 
     // MARK: Displays (driven by OverlayWindowManager)
 
@@ -174,6 +248,14 @@ final class AppState: ObservableObject {
     @Published var kineticEffects: Bool { didSet { defaults.set(kineticEffects, forKey: Key.kineticEffects) } }
     /// Comet length as a fraction of the bezel perimeter (Chasing and Symmetry).
     @Published var cometLength: Double { didSet { defaults.set(cometLength, forKey: Key.cometLength) } }
+    @Published var displayMode: DisplayMode { didSet { defaults.set(displayMode.rawValue, forKey: Key.displayMode) } }
+    @Published var romanizeLyrics: Bool { didSet { defaults.set(romanizeLyrics, forKey: Key.romanizeLyrics) } }
+    @Published var lyricFont: LyricFont { didSet { defaults.set(lyricFont.rawValue, forKey: Key.lyricFont) } }
+    @Published var lyricStyle: LyricStyle { didSet { defaults.set(lyricStyle.rawValue, forKey: Key.lyricStyle) } }
+    /// Lyric size multiplier (0.6…1.8).
+    @Published var lyricTextScale: Double { didSet { defaults.set(lyricTextScale, forKey: Key.lyricTextScale) } }
+    /// 0 = top of the screen, 1 = bottom.
+    @Published var lyricVerticalPosition: Double { didSet { defaults.set(lyricVerticalPosition, forKey: Key.lyricVerticalPosition) } }
     /// Display UUIDs (`NSScreen.edgeGlowIdentifier`) that get an overlay. Empty hides the glow everywhere.
     /// IDs of unplugged displays are kept, so the glow returns when that monitor is reconnected.
     @Published var activeDisplays: Set<String> { didSet { saveActiveDisplays() } }
@@ -188,6 +270,8 @@ final class AppState: ObservableObject {
             Key.useCustomColors: false,
             Key.kineticEffects: true,
             Key.cometLength: 0.18,
+            Key.lyricTextScale: 1.0,
+            Key.lyricVerticalPosition: 0.5,
         ])
         thickness = defaults.double(forKey: Key.thickness)
         glowSpread = defaults.double(forKey: Key.glowSpread)
@@ -200,6 +284,12 @@ final class AppState: ObservableObject {
         customSecondary = RGBColor(array: defaults.array(forKey: Key.customSecondary) as? [Double]) ?? .neonMagenta
         animationStyle = AnimationStyle(rawValue: defaults.string(forKey: Key.animationStyle) ?? "") ?? .breathing
         cometLength = defaults.double(forKey: Key.cometLength)
+        displayMode = DisplayMode(rawValue: defaults.string(forKey: Key.displayMode) ?? "") ?? .both
+        romanizeLyrics = defaults.object(forKey: Key.romanizeLyrics) as? Bool ?? true
+        lyricFont = LyricFont(rawValue: defaults.string(forKey: Key.lyricFont) ?? "") ?? .sfPro
+        lyricStyle = LyricStyle(rawValue: defaults.string(forKey: Key.lyricStyle) ?? "") ?? .constellation
+        lyricTextScale = defaults.double(forKey: Key.lyricTextScale)
+        lyricVerticalPosition = defaults.double(forKey: Key.lyricVerticalPosition)
 
         if let stored = defaults.stringArray(forKey: Key.activeDisplays) {
             activeDisplays = Set(stored)
@@ -231,7 +321,7 @@ final class AppState: ObservableObject {
     var audioReactive: Bool { isPlaying && levelSource != .none }
 
     /// Whether the overlay should currently be lit at all.
-    var glowActive: Bool { isPlaying || idleWhenPaused }
+    var glowActive: Bool { displayMode.glowOn && (isPlaying || idleWhenPaused) }
 
     var targetPrimary: RGBColor { useCustomColors ? customPrimary : extractedPrimary }
     var targetSecondary: RGBColor { useCustomColors ? customSecondary : extractedSecondary }

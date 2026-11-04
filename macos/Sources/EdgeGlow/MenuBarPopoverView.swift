@@ -8,7 +8,11 @@ struct MenuBarPopoverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+            modePicker
             nowPlayingCard
+            if state.displayMode != .off, let route = state.audioRoute {
+                audioSyncPill(route)
+            }
             if !state.automationDeniedApps.isEmpty {
                 permissionBanner
             }
@@ -19,14 +23,27 @@ struct MenuBarPopoverView: View {
             // header up under the menu bar. The header, now playing, toggles and footer stay pinned.
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 14) {
-                    colorsCard
-                    styleCard
-                    displaysCard
-                    slidersCard
+                    if state.displayMode == .off {
+                        standbyCard
+                    } else {
+                        colorsCard
+                        if state.displayMode.lyricsOn {
+                            lyricsCard
+                        }
+                        if state.displayMode.glowOn {
+                            styleCard
+                        }
+                        displaysCard
+                        if state.displayMode.glowOn {
+                            slidersCard
+                        }
+                    }
                 }
             }
             .scrollBounceBehavior(.basedOnSize)
-            togglesCard
+            if state.displayMode.glowOn {
+                togglesCard
+            }
             footer
         }
         .padding(16)
@@ -87,12 +104,12 @@ struct MenuBarPopoverView: View {
             switch state.audioStatus {
             case .live:
                 meterBadge("LIVE")
-                    .help("Bass (20–150 Hz) and vocals (300–3000 Hz) from system audio")
+                    .help("Bass (20–150 Hz) and vocals (300 Hz–3.4 kHz) from system audio")
             case .starting:
                 badgeLabel("waveform", "Starting…", color: .secondary)
             case .off:
                 badgeLabel("waveform", "Audio Off", color: .secondary)
-                    .help("System audio capture runs while the glow is on for at least one display")
+                    .help("System audio capture runs while EdgeGlow is on for at least one display")
             case .permissionNeeded:
                 badgeLabel("exclamationmark.triangle.fill", "No Access", color: .yellow)
             case .failed(let message):
@@ -151,6 +168,142 @@ struct MenuBarPopoverView: View {
         case .paused: return "Paused"
         case .stopped: return "Idle"
         }
+    }
+
+    // MARK: Mode
+
+    private var modePicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                ForEach(DisplayMode.allCases) { mode in
+                    modeSegment(mode)
+                }
+            }
+            .padding(3)
+            .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color.white.opacity(0.06)))
+            Text(state.displayMode.caption)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 2)
+        }
+    }
+
+    private func modeSegment(_ mode: DisplayMode) -> some View {
+        let selected = state.displayMode == mode
+        let accent = state.targetPrimary.color
+        return Button {
+            state.displayMode = mode
+        } label: {
+            Text(mode.title)
+                .font(.system(size: 12, weight: selected ? .semibold : .medium))
+                .foregroundStyle(selected ? Color.primary : Color.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(selected ? accent.opacity(0.22) : Color.clear)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(selected ? accent.opacity(0.6) : Color.clear, lineWidth: 1)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(mode.caption)
+    }
+
+    /// Read-only: the output route and the delay EdgeGlow compensates for automatically.
+    private func audioSyncPill(_ route: AudioRouteInfo) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: route.transport.symbol)
+                .font(.system(size: 10, weight: .semibold))
+            Text("Audio Sync: \(route.summary)")
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Capsule().fill(Color.white.opacity(0.06)))
+        .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 0.5))
+        .help("Lyrics are shifted automatically to match the audio path to your ears. There is nothing to adjust.")
+    }
+
+    private var standbyCard: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "moon.zzz.fill")
+                .foregroundStyle(.secondary)
+            Text("EdgeGlow is in standby. Nothing is drawn, no audio is captured and no players are polled.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .card()
+    }
+
+    // MARK: Lyrics
+
+    private var lyricsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                sectionTitle("Lyric Style")
+                Spacer()
+                Text(state.lyricStyle.blurb)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
+                ForEach(LyricStyle.allCases) { style in
+                    lyricStyleChip(style)
+                }
+            }
+            HStack {
+                Text("Font").font(.system(size: 11, weight: .medium))
+                Spacer()
+                Picker("Font", selection: $state.lyricFont) {
+                    ForEach(LyricFont.allCases.filter { $0 != .sfMono }) { Text($0.title).tag($0) }
+                }
+                .labelsHidden()
+                .frame(width: 140)
+            }
+            Toggle("Romanize Hindi / Punjabi / Urdu", isOn: $state.romanizeLyrics)
+                .font(.system(size: 11, weight: .medium))
+            sliderRow("Text Scale", value: $state.lyricTextScale, range: 0.6...1.8, display: "\(Int((state.lyricTextScale * 100).rounded()))%")
+            sliderRow("Vertical Position", value: $state.lyricVerticalPosition, range: 0...1, display: "\(Int((state.lyricVerticalPosition * 100).rounded()))%")
+        }
+        .card()
+    }
+
+    private func lyricStyleChip(_ style: LyricStyle) -> some View {
+        let selected = state.lyricStyle == style
+        let accent = state.targetPrimary.color
+        return Button {
+            state.lyricStyle = style
+        } label: {
+            Text(style.title)
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .foregroundStyle(selected ? Color.primary : Color.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(selected ? accent.opacity(0.16) : Color.white.opacity(0.04))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(selected ? accent.opacity(0.55) : Color.white.opacity(0.08), lineWidth: selected ? 1 : 0.5)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(style.blurb)
     }
 
     // MARK: Now playing
@@ -248,7 +401,7 @@ struct MenuBarPopoverView: View {
             Image(systemName: "waveform.badge.exclamationmark")
                 .foregroundStyle(.yellow)
             VStack(alignment: .leading, spacing: 6) {
-                Text("Allow EdgeGlow under Privacy & Security → Screen & System Audio Recording so the glow can react to the music, then relaunch.")
+                Text("Allow EdgeGlow under Privacy & Security → Screen & System Audio Recording (System Audio Recording Only is enough) so it can hear the music, then relaunch.")
                     .font(.system(size: 11))
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
@@ -451,7 +604,7 @@ struct MenuBarPopoverView: View {
     private var displaySummary: String {
         let total = state.availableDisplays.count
         let on = enabledConnectedCount
-        if on == 0 { return "Glow hidden" }
+        if on == 0 { return "Hidden" }
         return on == total ? (total == 1 ? "On" : "All \(total) on") : "\(on) of \(total) on"
     }
 

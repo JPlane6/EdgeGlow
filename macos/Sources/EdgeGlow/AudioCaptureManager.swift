@@ -37,8 +37,12 @@ final class AudioLevels: @unchecked Sendable {
     }
 }
 
-/// Captures the Mac's system audio output with ScreenCaptureKit (never the microphone) and turns it into
-/// bass (20–150 Hz) and vocal (300–3000 Hz) energies with a vDSP FFT.
+/// Captures the Mac's system audio output (never the microphone) and turns it into bass (20–150 Hz) and
+/// vocal (300 Hz–3.4 kHz) energies with a vDSP FFT.
+///
+/// On macOS 14.2+ the audio comes from a CoreAudio process tap (`SystemAudioTap`): audio only, no video
+/// pipeline, no screen-sharing indicator. Older systems, or a failed tap, fall back to ScreenCaptureKit
+/// configured as an audio-only stream (a 2×2 px, 1 fps dummy video that is never delivered).
 ///
 /// Capture runs whenever at least one display has the glow enabled, independent of which player is in
 /// use, and restarts itself when the default output device changes (Bluetooth, AirPlay, USB). When a
@@ -46,7 +50,7 @@ final class AudioLevels: @unchecked Sendable {
 /// from the app), the levels come from Cloud Sync instead, until real audio returns.
 final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
     private static let bassBand = 20.0...150.0
-    private static let vocalBand = 300.0...3000.0
+    private static let vocalBand = 300.0...3400.0
     /// Broadband level above which the Mac counts as playing audio (switches back to the live FFT at once).
     private static let presenceDb = -68.0
     /// Broadband level below which the Mac counts as silent…
@@ -61,6 +65,9 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // Main-thread state.
     private var stream: SCStream?
+    /// A `SystemAudioTap` (macOS 14.2+); typed as AnyObject so this class has no availability requirement.
+    private var tap: AnyObject?
+    private var tapUnavailable = false
     private var isStarting = false
     private var restartWhenStarted = false
     private var requestedAccess = false
@@ -86,6 +93,8 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
     private var vocalEnvelope = 0.0
     private var bassPeak = RollingPeak()
     private var vocalPeak = RollingPeak()
+    private var vocalSlow = 0.0
+    private var lastVocalOnset: CFTimeInterval = 0
     private var captureRunning = false
     private var audioPresent = false
     private var silentSince: CFTimeInterval?
@@ -115,9 +124,9 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
     // MARK: Lifecycle
 
     func start() {
-        // Glow enabled on any display → capture. receive(on:) defers past @Published's willSet.
-        state.$activeDisplays
-            .map(\.isEmpty)
+        // An overlay on any display (and not in standby) → capture. receive(on:) defers past @Published's willSet.
+        Publishers.CombineLatest(state.$activeDisplays.map(\.isEmpty), state.$displayMode)
+            .map { noDisplays, mode in !noDisplays && mode != .off }
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateCapture() }
@@ -163,9 +172,12 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    /// At least one display shows the glow and the Mac isn't asleep or switched to another user.
+    /// An overlay is enabled on at least one display (not in standby) and the Mac isn't asleep or
+    /// switched to another user. The lyrics also use the FFT to lock onto vocal onsets.
     private var captureWanted: Bool {
-        !state.activeDisplays.isEmpty && !screensAsleep && sessionActive
+        // Debug/testing switch: `EDGEGLOW_NO_AUDIO=1` skips the system audio capture (and its permission prompt).
+        if ProcessInfo.processInfo.environment["EDGEGLOW_NO_AUDIO"] != nil { return false }
+        return state.displayMode != .off && !state.activeDisplays.isEmpty && !screensAsleep && sessionActive
     }
 
     private func updateCapture() {
@@ -177,7 +189,32 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func startCapture() {
-        guard stream == nil, !isStarting else { return }
+        guard stream == nil, tap == nil, !isStarting else { return }
+        if #available(macOS 14.2, *), !tapUnavailable, startTap() { return }
+        startScreenCapture()
+    }
+
+    /// Core Audio process tap. Returns false (and remembers it) when the tap can't be created, so the
+    /// ScreenCaptureKit audio-only path takes over.
+    @available(macOS 14.2, *)
+    private func startTap() -> Bool {
+        let tap = SystemAudioTap(queue: sampleQueue) { [weak self] mono, rate in
+            self?.analyze(mono, sampleRate: rate)
+        }
+        do {
+            try tap.start()
+        } catch {
+            tap.stop()
+            tapUnavailable = true
+            return false
+        }
+        self.tap = tap
+        state.audioStatus = .live
+        markCaptureRunning()
+        return true
+    }
+
+    private func startScreenCapture() {
         guard CGPreflightScreenCaptureAccess() else {
             // Shows the system prompt once; after granting, macOS needs the app relaunched.
             if !requestedAccess {
@@ -237,21 +274,31 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         config.sampleRate = 48_000
         config.channelCount = 2
         // SCStreamConfiguration has no audio-only switch, so make the mandatory video stream as cheap
-        // as possible: 2×2 px at 1 fps, frames discarded.
+        // as possible: 2×2 px at 1 fps with the shallowest queue. Only the audio output is registered
+        // below, so no full-screen IOSurface buffers are ever allocated or retained.
         config.width = 2
         config.height = 2
         config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        config.queueDepth = 3
         config.showsCursor = false
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
-        // Registering a screen output too stops ScreenCaptureKit logging a "dropping frame" error each second.
-        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
         try await stream.startCapture()
         return stream
     }
 
     private func stopCapture() {
+        if #available(macOS 14.2, *), let tap = tap as? SystemAudioTap {
+            self.tap = nil
+            tap.stop()
+            state.audioStatus = .off
+            sampleQueue.async { [self] in
+                captureRunning = false
+                resetAnalysis()
+            }
+            return
+        }
         guard let stream else { return }
         self.stream = nil
         stream.stopCapture { _ in }
@@ -266,6 +313,16 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
     private func restartCapture() {
         if isStarting {
             restartWhenStarted = true
+            return
+        }
+        if #available(macOS 14.2, *), let old = tap as? SystemAudioTap {
+            tap = nil
+            old.stop()
+            sampleQueue.async { [self] in
+                captureRunning = false
+                resetAnalysis()
+            }
+            DispatchQueue.main.async { [weak self] in self?.updateCapture() }
             return
         }
         guard let old = stream else {
@@ -510,12 +567,28 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         let bassLevel = bassRatio
         let vocalLevel = vocalRatio.squareRoot()
 
+        detectVocalOnset(vocalRatio, dt: dt, now: now)
+
         bassEnvelope = Self.envelope(bassEnvelope, target: bassLevel, dt: dt, attack: 0.012, release: 0.16)
         vocalEnvelope = Self.envelope(vocalEnvelope, target: vocalLevel, dt: dt, attack: 0.03, release: 0.35)
         // The FFT keeps running under Cloud Sync (to notice audio coming back) but only publishes when live.
         if levelSource != .cloudSync {
             state.audioLevels.update(bass: bassEnvelope, vocal: vocalEnvelope)
         }
+    }
+
+    /// A sudden rise of 300 Hz–3.4 kHz energy above its own recent average marks a vocal (or other
+    /// mid-range) attack. When live audio is playing from a native player, the onset's track time is
+    /// handed to the lyric lock, which compares it with the nearest word start.
+    private func detectVocalOnset(_ vocal: Double, dt: Double, now: CFTimeInterval) {
+        let rise = vocal - vocalSlow
+        vocalSlow += (vocal - vocalSlow) * (1 - exp(-dt / 0.2))
+        guard rise > 0.2, vocal > 0.3, now - lastVocalOnset > 0.12,
+              audioPresent, levelSource == .live, state.playbackClock.isPlaying else { return }
+        lastVocalOnset = now
+        // The FFT window is centered half a window behind the newest sample.
+        let analysisDelay = 0.5 * Double(fftSize) / sampleRate
+        state.vocalLock.noteOnset(trackTime: state.playbackClock.currentTrackTime(at: now - analysisDelay), at: now)
     }
 
     /// Combined linear amplitude of the bins covering `band` (a full-scale sine reads ≈ 1).
@@ -563,6 +636,7 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         vocalEnvelope = 0
         bassPeak.reset()
         vocalPeak.reset()
+        vocalSlow = 0
         setAudioPresent(false)
         updateLevelSource(now: CACurrentMediaTime())
         if levelSource != .cloudSync {

@@ -8,6 +8,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var overlays: OverlayWindowManager?
     private var media: MediaBridge?
     private var audio: AudioCaptureManager?
+    private var latency: AudioLatencyDetector?
+    private var lyricsModel: LyricsModel?
+    private var lyricsOverlays: LyricsOverlayManager?
     private var outsideClickMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -25,11 +28,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let audio = AudioCaptureManager(state: state)
         audio.start()
         self.audio = audio
+
+        let latency = AudioLatencyDetector(state: state)
+        latency.start()
+        self.latency = latency
+
+        // Lyrics follow the same AppState the glow does: one media bridge, one clock, one palette.
+        let lyrics = LyricsModel(state: state)
+        lyrics.start()
+        lyricsModel = lyrics
+        let lyricsOverlays = LyricsOverlayManager(state: state, model: lyrics)
+        lyricsOverlays.start()
+        self.lyricsOverlays = lyricsOverlays
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         media?.stop()
         audio?.stop()
+        latency?.stop()
+        lyricsOverlays?.stop()
+        lyricsModel?.stop()
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {

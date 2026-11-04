@@ -53,9 +53,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
+	<string>1.1.0</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
@@ -79,8 +79,14 @@ ICON="../assets/AppIcon.icns"
 [ -f "$ICON" ] || { echo "error: $ICON missing (run assets/make_icons.sh)" >&2; exit 1; }
 cp "$ICON" "$RES_DIR/AppIcon.icns"
 
+echo "==> Checking Lyrics/Engine is platform-agnostic"
+BAD="$(grep -rnE '^[[:space:]]*import[[:space:]]+(AppKit|SwiftUI|UIKit|CoreGraphics|QuartzCore|Metal|MetalKit|SpriteKit|CoreImage|CoreText|Combine|NaturalLanguage|IOKit)' Sources/EdgeGlow/Lyrics/Engine || true)"
+if [ -n "$BAD" ]; then echo "$BAD"; echo "error: Lyrics/Engine may only import Foundation" >&2; exit 1; fi
+
 echo "==> Compiling into $MACOS_DIR/$NAME"
-swiftc Sources/EdgeGlow/*.swift \
+SOURCES=()
+while IFS= read -r f; do SOURCES+=("$f"); done < <(find Sources/EdgeGlow -name '*.swift' | sort)
+swiftc "${SOURCES[@]}" \
     -O \
     -swift-version 5 \
     -target "$(uname -m)-apple-macos14.0" \

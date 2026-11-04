@@ -8,10 +8,24 @@ struct GlowOverlayView: View {
     @ObservedObject var state: AppState
     @ObservedObject var renderer: GlowRenderer
 
+    /// The glow is a soft, heavily blurred rim, so it is rasterized at this fraction of the screen's pixel
+    /// resolution and scaled up by the GPU. Every blur layer is a full-canvas offscreen texture, so
+    /// reduced-area buffers cut the overlay's graphics memory in proportion, with no visible loss
+    /// on a blurred gradient.
+    static let renderScale: CGFloat = 0.4
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !renderer.animating)) { timeline in
-            Canvas { context, size in
-                renderer.draw(in: &context, size: size, date: timeline.date, state: state)
+        GeometryReader { geo in
+            TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !renderer.animating)) { timeline in
+                Canvas { context, size in
+                    var scaled = context
+                    scaled.scaleBy(x: Self.renderScale, y: Self.renderScale)
+                    let full = CGSize(width: size.width / Self.renderScale, height: size.height / Self.renderScale)
+                    renderer.draw(in: &scaled, size: full, date: timeline.date, state: state)
+                }
+                .frame(width: geo.size.width * Self.renderScale, height: geo.size.height * Self.renderScale)
+                .scaleEffect(1 / Self.renderScale, anchor: .topLeading)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             }
         }
         .ignoresSafeArea()

@@ -112,23 +112,79 @@ enum MediaMetadataService {
         return bpm
     }
 
-    /// Synced lyrics from LRCLIB: the exact-match endpoint first, then its search.
+    /// Synced lyrics as timed lines for Cloud Sync. Shares one LRCLIB request with the lyrics overlay.
     static func syncedLyrics(title: String, artist: String, duration: Double?) async -> [LyricLine]? {
-        let track = cleanTitle(title)
-        let artistName = primaryArtist(artist)
-        var query = ["track_name": track, "artist_name": artistName]
-        if let duration, duration > 0 { query["duration"] = String(Int(duration.rounded())) }
-        if let exact: LrclibRecord = await fetch("https://lrclib.net/api/get", query),
-           let lines = exact.syncedLyrics.map(LyricsParser.parse), !lines.isEmpty {
-            return lines
-        }
-        guard let results: [LrclibRecord] = await fetch("https://lrclib.net/api/search", ["track_name": track, "artist_name": artistName]) else { return nil }
-        // Prefer the synced result whose length is closest to the playing track.
-        let synced = results.filter { !($0.syncedLyrics ?? "").isEmpty }
-        let best = synced.min { abs(($0.duration ?? 0) - (duration ?? 0)) < abs(($1.duration ?? 0) - (duration ?? 0)) }
-        guard let text = best?.syncedLyrics else { return nil }
+        let clean = LyricsProvider.sanitize(title: title, artist: artist)
+        guard case .found(let text) = await lrclibSynced(title: clean.title, artist: clean.artist, album: "", duration: duration ?? 0, strict: false) else { return nil }
         let lines = LyricsParser.parse(text)
         return lines.isEmpty ? nil : lines
+    }
+
+    /// Raw synced (LRC) lyrics from LRCLIB: the exact-match endpoint first, then its fuzzy search.
+    /// Identical in-flight and recent requests are shared, so Cloud Sync and the lyrics overlay cost one lookup.
+    static func lrclibSynced(title: String, artist: String, album: String, duration: Double, strict: Bool) async -> LRCLIBResult {
+        let key = "\(title)|\(artist)|\(album)|\(Int(duration.rounded()))|\(strict)"
+        return await lrclibCoalescer.result(for: key) {
+            await lrclibFetch(title: title, artist: artist, album: album, duration: duration, strict: strict)
+        }
+    }
+
+    private static let lrclibCoalescer = LRCLIBCoalescer()
+
+    /// GET with one retry on transient failures (LRCLIB answers 503 when overloaded).
+    /// 404 and 400 (e.g. duration out of range) are definitive "no lyrics" answers.
+    private static func lrclibGET(_ url: URL) async -> (status: Int, data: Data)? {
+        for attempt in 0..<2 {
+            if let (data, response) = try? await session.data(from: url), let code = (response as? HTTPURLResponse)?.statusCode {
+                if code < 500 { return (code, data) }
+            }
+            if attempt == 0 { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+        }
+        return nil
+    }
+
+    private static func lrclibFetch(title: String, artist: String, album: String, duration: Double, strict: Bool) async -> LRCLIBResult {
+        var get = URLComponents(string: "https://lrclib.net/api/get")!
+        var items = [URLQueryItem(name: "track_name", value: title), URLQueryItem(name: "artist_name", value: artist)]
+        if !album.isEmpty { items.append(URLQueryItem(name: "album_name", value: album)) }
+        if duration > 0 { items.append(URLQueryItem(name: "duration", value: String(Int(duration.rounded())))) }
+        get.queryItems = items
+        guard let getURL = get.url, let first = await lrclibGET(getURL) else { return .failed }
+        if first.status == 200,
+           let record = try? JSONDecoder().decode(LrclibRecord.self, from: first.data),
+           record.instrumental != true, let synced = record.syncedLyrics, !synced.isEmpty {
+            return .found(synced)
+        }
+        if first.status != 200 && first.status != 404 && first.status != 400 { return .failed }
+        if first.status == 400 { return .notFound }
+
+        // Fuzzy search fallback. Validation (strict) insists on a known duration that matches closely.
+        if strict && duration <= 0 { return .notFound }
+        let tolerance = strict ? 3.0 : 8.0
+        var best: (score: Double, record: LrclibRecord)?
+        var sawFailure = false
+        for query in [["q": "\(title) \(artist)"], ["track_name": title, "artist_name": artist], ["q": title]] {
+            var search = URLComponents(string: "https://lrclib.net/api/search")!
+            search.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+            guard let searchURL = search.url, let res = await lrclibGET(searchURL) else { sawFailure = true; continue }
+            guard res.status == 200, let records = try? JSONDecoder().decode([LrclibRecord].self, from: res.data) else { continue }
+            for record in records where record.instrumental != true {
+                let hasSynced = !(record.syncedLyrics ?? "").isEmpty
+                guard hasSynced || !(record.plainLyrics ?? "").isEmpty,
+                      var score = LyricSanitizer.score(title: title, artist: artist, candidateTitle: record.trackName ?? "", candidateArtist: record.artistName ?? "",
+                                                        duration: duration, candidateDuration: record.duration ?? 0, tolerance: tolerance) else { continue }
+                if !hasSynced { score -= 2.5 }   // synced always beats plain
+                if best == nil || score > best!.score { best = (score, record) }
+            }
+            if let b = best, b.score > 4.2, !(b.record.syncedLyrics ?? "").isEmpty { break }
+        }
+        if let record = best?.record {
+            if let synced = record.syncedLyrics, !synced.isEmpty { return .found(synced) }
+            if !strict, let plain = record.plainLyrics, let spread = LyricSanitizer.spreadPlain(plain, duration: duration > 0 ? duration : (record.duration ?? 0)) {
+                return .found(spread)
+            }
+        }
+        return sawFailure && best == nil ? .failed : .notFound
     }
 
     private static func deezerTrack(title: String, artist: String) async -> DeezerTrack? {
@@ -194,7 +250,32 @@ enum MediaMetadataService {
     private struct DeezerTrackDetail: Decodable { let bpm: Double? }
     private struct LrclibRecord: Decodable {
         let syncedLyrics: String?
+        let plainLyrics: String?
+        let trackName: String?
+        let artistName: String?
         let duration: Double?
+        let instrumental: Bool?
+    }
+}
+
+enum LRCLIBResult { case found(String), notFound, failed }
+
+/// Shares in-flight LRCLIB lookups between callers and remembers the last few definitive answers.
+private actor LRCLIBCoalescer {
+    private var inFlight: [String: Task<LRCLIBResult, Never>] = [:]
+    private var recent: [(key: String, result: LRCLIBResult)] = []
+
+    func result(for key: String, fetch: @escaping @Sendable () async -> LRCLIBResult) async -> LRCLIBResult {
+        if let hit = recent.first(where: { $0.key == key }) { return hit.result }
+        if let task = inFlight[key] { return await task.value }
+        let task = Task { await fetch() }
+        inFlight[key] = task
+        let result = await task.value
+        inFlight[key] = nil
+        if case .failed = result { return result }
+        recent.append((key, result))
+        if recent.count > 6 { recent.removeFirst() }
+        return result
     }
 }
 

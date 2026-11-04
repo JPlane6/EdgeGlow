@@ -29,7 +29,10 @@ final class OverlayWindowManager {
         )
 
         // @Published emits on willSet, so use the delivered value rather than re-reading the property.
-        state.$activeDisplays
+        // The rim exists only while the mode includes it; Lyrics Only and Off tear the panels (and their
+        // render loops) down.
+        Publishers.CombineLatest(state.$activeDisplays, state.$displayMode)
+            .map { displays, mode in mode.glowOn ? displays : [] }
             .dropFirst()
             .removeDuplicates()
             .sink { [weak self] active in
@@ -47,12 +50,14 @@ final class OverlayWindowManager {
 
     func start() {
         refreshDisplayList()
-        sync(active: state.activeDisplays)
+        sync(active: glowDisplays)
     }
+
+    private var glowDisplays: Set<String> { state.displayMode.glowOn ? state.activeDisplays : [] }
 
     @objc private func screenParametersChanged(_ notification: Notification) {
         refreshDisplayList()
-        sync(active: state.activeDisplays)
+        sync(active: glowDisplays)
     }
 
     /// Brings the set of live panels in line with the checked displays that are actually connected.

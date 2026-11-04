@@ -49,8 +49,13 @@ final class AppleScriptProvider {
         }
         guard let script else { return .failed }
         var error: NSDictionary?
+        let t0 = CACurrentMediaTime()
         let descriptor = script.executeAndReturnError(&error)
-        let polledAt = CACurrentMediaTime()
+        let t1 = CACurrentMediaTime()
+        // The player samples its position part-way through the round trip, so about 65% of the IPC time has
+        // already elapsed by the time the answer is back. Spotify's scripted position also trails its mixer.
+        let compensation = (t1 - t0) * 0.65 + (bundleID == "com.spotify.client" ? 0.155 : 0)
+        let polledAt = t1
         if let error {
             let code = (error[NSAppleScript.errorNumber] as? NSNumber)?.intValue ?? 0
             // -1743: errAEEventNotPermitted (user denied Automation access in System Settings).
@@ -66,7 +71,7 @@ final class AppleScriptProvider {
             title: parts[1],
             artist: parts[2],
             artworkURL: parts[3].hasPrefix("http") ? parts[3] : nil,
-            position: number(parts[4]),
+            position: number(parts[4]).map { $0 + compensation },
             duration: number(parts[5]).flatMap { $0 > 0 ? $0 : nil }
         )
         guard let refined = refine(info) else { return .stopped }
@@ -128,16 +133,44 @@ extension AppleScriptProvider {
         ("Microsoft Edge", "com.microsoft.edgemac", "title"),
         ("Brave Browser", "com.brave.Browser", "title"),
     ].map { name, bundleID, titleProperty in
-        AppleScriptProvider(source: .youTubeMusic, appName: name, bundleID: bundleID, script: """
+        // Chromium browsers: `execute <tab> javascript`; Safari: `do JavaScript … in <tab>`. Both need
+        // "Allow JavaScript from Apple Events"; when it is off the calls fail and the bridge falls back to the
+        // audio-gated stopwatch, so lyrics still work.
+        func js(_ expr: String) -> String {
+            titleProperty == "name"
+                ? "do JavaScript \"\(expr)\" in t"
+                : "execute t javascript \"\(expr)\""
+        }
+        let media = "(document.querySelector('video,audio')||{})"
+        return AppleScriptProvider(source: .youTubeMusic, appName: name, bundleID: bundleID, script: """
+        set hosts to {"music.youtube.com", "youtube.com/watch", "soundcloud.com", "jiosaavn.com", "gaana.com", "wynk", "spotify.com", "hungama.com", "music.apple.com", "bandcamp.com", "deezer.com", "tidal.com", "amazon.com/music", "music.amazon"}
+        set fallback to ""
         if application id "\(bundleID)" is running then
             tell application id "\(bundleID)"
                 repeat with w in windows
                     repeat with t in tabs of w
-                        if (URL of t as string) contains "music.youtube.com" then return "PLAYING|||" & (\(titleProperty) of t)
+                        set u to URL of t as string
+                        set isMusic to false
+                        repeat with h in hosts
+                            if u contains (h as string) then set isMusic to true
+                        end repeat
+                        if isMusic then
+                            set ct to ""
+                            set du to ""
+                            set paused to ""
+                            try
+                                set ct to (\(js("String(\(media).currentTime)"))) as string
+                                set du to (\(js("String(\(media).duration)"))) as string
+                                set paused to (\(js("String(\(media).paused)"))) as string
+                            end try
+                            if paused is not "true" then return "PLAYING|||" & (\(titleProperty) of t) & "||||||" & ct & "|||" & du
+                            if fallback is "" then set fallback to "PAUSED|||" & (\(titleProperty) of t) & "||||||" & ct & "|||" & du
+                        end if
                     end repeat
                 end repeat
             end tell
         end if
+        if fallback is not "" then return fallback
         return "STOPPED"
         """, refine: refineYouTubeMusicTitle)
     }
@@ -148,9 +181,12 @@ extension AppleScriptProvider {
         if let range = title.range(of: #"^\(\d+\)\s*"#, options: .regularExpression) { title.removeSubrange(range) }
         if title.hasSuffix(" - YouTube Music") { title = String(title.dropLast(" - YouTube Music".count)) }
         guard !title.isEmpty, title != "YouTube Music" else { return nil }
+        for suffix in [" - YouTube", " | SoundCloud", " - SoundCloud"] where title.hasSuffix(suffix) { title = String(title.dropLast(suffix.count)) }
         var refined = info
         refined.title = title
-        refined.position = nil
+        // Position survives only when the tab answered the JavaScript probe (NaN / empty means it did not).
+        if let p = refined.position, !p.isFinite { refined.position = nil }
+        if let d = refined.duration, !d.isFinite { refined.duration = nil }
         return refined
     }
 }
@@ -198,6 +234,19 @@ final class MediaBridge {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.poll() }
             .store(in: &cancellables)
+        // Standby stops all polling (no AppleEvents, no timers); leaving it resumes at once.
+        state.$displayMode
+            .map { $0 != .off }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] awake in self?.setPolling(awake) }
+            .store(in: &cancellables)
+    }
+
+    private func setPolling(_ enabled: Bool) {
+        timer?.invalidate()
+        timer = nil
+        guard enabled else { return }
         // Backup poll so we pick up a track that was already playing at launch and keep position fresh.
         let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in self?.poll() }
         timer.tolerance = 0.3
@@ -223,6 +272,7 @@ final class MediaBridge {
     // MARK: Polling
 
     private func poll() {
+        guard state.displayMode != .off else { return }
         guard !pollInFlight else {
             pollQueued = true
             return
@@ -298,6 +348,7 @@ final class MediaBridge {
         setIfChanged(\.playback, chosen == nil ? .stopped : (playing ? .playing : .paused))
         setIfChanged(\.trackName, info?.title ?? "")
         setIfChanged(\.artistName, info?.artist ?? "")
+        setIfChanged(\.trackDuration, info?.duration ?? 0)
 
         let key = chosen.map { "\($0.source.rawValue)\u{1F}\(info?.title ?? "")\u{1F}\(info?.artist ?? "")" } ?? ""
         let trackChanged = key != currentTrackKey
@@ -317,7 +368,7 @@ final class MediaBridge {
     /// AppleScript latency jitter does not wobble the beat phase.
     private func updateClock(source: MediaSource?, info: NowPlayingInfo?, playing: Bool, polledAt: CFTimeInterval?, trackChanged: Bool) {
         let clock = state.playbackClock
-        let hasPosition = source?.reportsPosition == true
+        let hasPosition = source?.reportsPosition == true || (source == .youTubeMusic && info?.position != nil)
         if hasPosition, let position = info?.position, let polledAt {
             if playing {
                 let drift = abs(clock.currentTrackTime(at: polledAt) - position)
@@ -329,6 +380,12 @@ final class MediaBridge {
                 clock.setPlaying(false)
                 clock.anchor(position: position, at: polledAt)
             }
+        } else if source == .youTubeMusic || source == .systemAudio {
+            // No readable position (JavaScript from Apple Events is off, or an app that exposes nothing):
+            // a stopwatch started at the track change that runs only while the Mac is audibly playing.
+            let now = CACurrentMediaTime()
+            if trackChanged { clock.anchor(position: 0, at: now) }
+            clock.setPlaying(state.systemAudioActive, at: now)
         } else {
             clock.setPlaying(false)
         }
@@ -349,6 +406,7 @@ final class MediaBridge {
         cloudTask?.cancel()
         let cloudSync = state.cloudSync
         cloudSync.beginTrack(key)
+        setIfChanged(\.trackBPM, nil)
         guard let source, source.reportsPosition, let info, !info.title.isEmpty else { return }
         cloudTask = Task {
             async let bpm = MediaMetadataService.bpm(title: info.title, artist: info.artist)
@@ -356,6 +414,10 @@ final class MediaBridge {
             let (tempo, lines) = await (bpm, lyrics)
             guard !Task.isCancelled else { return }
             cloudSync.update(key: key, bpm: tempo, lines: lines)
+            await MainActor.run { [weak self] in
+                // Shared with the lyrics rhythm engine, so Deezer is asked once per track.
+                if let self, self.currentTrackKey == key { self.setIfChanged(\.trackBPM, tempo) }
+            }
         }
     }
 
