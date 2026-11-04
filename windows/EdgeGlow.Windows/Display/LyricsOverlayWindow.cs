@@ -17,8 +17,8 @@ namespace EdgeGlow;
 /// </summary>
 public sealed class LyricsOverlayWindow : Window
 {
-    private const int MaxRenderWidth = 1920;
-    private const double MinFrameInterval = 1.0 / 30;
+    private const int MaxRenderWidth = 1600;
+    private const double MinFrameInterval = 1.0 / 60;
 
     private readonly Image _image = new() { Stretch = Stretch.Fill, SnapsToDevicePixels = true };
     private readonly LyricsDirector _director = new();
@@ -135,7 +135,7 @@ public sealed class LyricsOverlayWindow : Window
             return false;
         }
         _drawnStatus = null;
-        // One dimmed frame while paused is enough; while playing, cap at 30 fps.
+        // One dimmed frame while paused is enough; while playing, cap at 60 fps.
         if (now - _lastFrame < MinFrameInterval && playing) return true;
         _lastFrame = now;
         _cleared = false;

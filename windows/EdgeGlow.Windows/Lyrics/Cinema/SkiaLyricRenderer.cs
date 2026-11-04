@@ -16,7 +16,8 @@ public readonly record struct LensParams(float CenterX, float CenterY, float Rad
 public sealed class SkiaLyricRenderer : IDisposable
 {
     private const float NearPlane = 40;
-    private const float LensSupersample = 1.3f;
+    private const float LensSupersample = 1.0f;     // was 1.3: the supersampled lens pass cost ~70 % more pixels
+    private static readonly DrawLayer[] Layers = { DrawLayer.Back, DrawLayer.Body, DrawLayer.Glow, DrawLayer.Top };
     private SKSurface? _lensSurface;
     private int _lensW, _lensH;
     private LyricFont _font = LyricFont.SfPro;
@@ -63,7 +64,7 @@ public sealed class SkiaLyricRenderer : IDisposable
     private void DrawItems(SKCanvas canvas, DrawList list, in CameraFrame cam, float w, float h, float cy, float ss, float alpha)
     {
         var center = new Vector2(w * 0.5f, cy);
-        foreach (var layer in new[] { DrawLayer.Back, DrawLayer.Body, DrawLayer.Glow, DrawLayer.Top })
+        foreach (var layer in Layers)
         {
             IEnumerable<DrawItem> items = list.Items.Where(i => i.Layer == layer);
             if (layer == DrawLayer.Body || layer == DrawLayer.Back) items = items.OrderByDescending(i => i.Depth);
@@ -191,10 +192,12 @@ public sealed class SkiaLyricRenderer : IDisposable
                 paint.Style = SKPaintStyle.Stroke; paint.StrokeWidth = 3f * ss / pxPerUnit; paint.StrokeJoin = SKStrokeJoin.Round;
                 break;
             case TextStyle.Shadow:
-                paint.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, Math.Max(0.5f, item.ShadowPx * ss * 0.5f / pxPerUnit), true);
+                // Hard-edged offset copy instead of a real-time blur (a CPU blur per word dominated frame time).
+                canvas.Translate(Math.Clamp(item.ShadowPx * 0.2f, 2f, 3f) * ss / pxPerUnit, Math.Clamp(item.ShadowPx * 0.2f, 2f, 3f) * ss / pxPerUnit);
                 break;
             default:
-                if (item.Blur > 0.02f) paint.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 0.77f * item.Blur, true);
+                // Depth-of-field softness is approximated by fading, not blurring.
+                if (item.Blur > 0.02f) paint.Color = Rgba(color, Math.Max(0.35f, 1f - 0.25f * item.Blur) * color.W);
                 break;
         }
         canvas.DrawText(run.Blob, 0, -run.Ascent, paint);
@@ -209,8 +212,11 @@ public sealed class SkiaLyricRenderer : IDisposable
         var glow = item.Extra;
         if (glow > 0.05f && additive)
         {
+            // Two stacked translucent strokes fake the falloff of the former blurred halo.
             using var halo = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeCap = SKStrokeCap.Round, StrokeWidth = wpx * (1.2f + glow * 1.8f),
-                Color = Rgba(color, 0.32f * Math.Min(glow, 1.5f)), BlendMode = SKBlendMode.Plus, MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, wpx * 0.9f + 1) };
+                Color = Rgba(color, 0.14f * Math.Min(glow, 1.5f)), BlendMode = SKBlendMode.Plus };
+            canvas.DrawLine(a, b, halo);
+            halo.StrokeWidth = wpx * (0.8f + glow * 0.9f);
             canvas.DrawLine(a, b, halo);
         }
         using var core = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeCap = SKStrokeCap.Round, StrokeWidth = wpx, Color = Rgba(color),
@@ -300,8 +306,9 @@ public sealed class SkiaLyricRenderer : IDisposable
         if (item.Extra > 0.01f)
         {
             using var border = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 2.2f / Math.Max(pxPerUnit, 1f), Color = Rgba(color, 0.9f * item.Extra), BlendMode = SKBlendMode.Plus };
-            using var glow = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 9f / Math.Max(pxPerUnit, 1f), Color = Rgba(color, 0.35f * item.Extra), BlendMode = SKBlendMode.Plus,
-                MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 4f / Math.Max(pxPerUnit, 1f)) };
+            using var glow = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 9f / Math.Max(pxPerUnit, 1f), Color = Rgba(color, 0.2f * item.Extra), BlendMode = SKBlendMode.Plus };
+            canvas.DrawRoundRect(rect, radius, radius, glow);
+            glow.StrokeWidth = 5f / Math.Max(pxPerUnit, 1f);
             canvas.DrawRoundRect(rect, radius, radius, glow);
             canvas.DrawRoundRect(rect, radius, radius, border);
         }
@@ -379,14 +386,16 @@ public sealed class SkiaLyricRenderer : IDisposable
     {
         var rim = new Vector4(hi.X + (1 - hi.X) * 0.55f, hi.Y + (1 - hi.Y) * 0.55f, hi.Z + (1 - hi.Z) * 0.55f, 1);
         var rect = new SKRect(lp.CenterX - lp.RadiusX, lp.CenterY - lp.RadiusY, lp.CenterX + lp.RadiusX, lp.CenterY + lp.RadiusY);
-        using (var glow = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = lp.RadiusY * 0.09f, Color = Rgba(rim, 0.30f * alpha),
-                   MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, lp.RadiusY * 0.025f), BlendMode = SKBlendMode.Plus })
+        using (var glow = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = lp.RadiusY * 0.09f, Color = Rgba(rim, 0.15f * alpha), BlendMode = SKBlendMode.Plus })
+        {
             canvas.DrawOval(rect, glow);
+            glow.StrokeWidth = lp.RadiusY * 0.045f;
+            canvas.DrawOval(rect, glow);
+        }
         using (var line = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 2.5f, Color = Rgba(rim, 0.65f * alpha), BlendMode = SKBlendMode.Plus })
             canvas.DrawOval(rect, line);
         // Specular crescent at the upper left.
-        using var spec = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = lp.RadiusY * 0.035f, StrokeCap = SKStrokeCap.Butt, Color = Rgba(new Vector4(1, 1, 1, 1), 0.28f * alpha),
-            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, lp.RadiusY * 0.03f), BlendMode = SKBlendMode.Plus };
+        using var spec = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = lp.RadiusY * 0.035f, StrokeCap = SKStrokeCap.Butt, Color = Rgba(new Vector4(1, 1, 1, 1), 0.22f * alpha), BlendMode = SKBlendMode.Plus };
         var inset = new SKRect(rect.Left + 6, rect.Top + 6, rect.Right - 6, rect.Bottom - 6);
         using var path = new SKPath();
         path.AddArc(inset, 200, 70);
