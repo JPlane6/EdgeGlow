@@ -40,6 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let lyricsOverlays = LyricsOverlayManager(state: state, model: lyrics)
         lyricsOverlays.start()
         self.lyricsOverlays = lyricsOverlays
+
+        Updater.shared.checkOnLaunch()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

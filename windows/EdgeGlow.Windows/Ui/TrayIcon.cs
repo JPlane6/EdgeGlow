@@ -27,6 +27,8 @@ public sealed class TrayIcon : IDisposable
         var menu = new ContextMenuStrip();
         menu.Items.Add("Open EdgeGlow", null, (_, _) => _flyout.ShowFlyout());
         menu.Items.Add(_startupItem);
+        menu.Items.Add("Check for Updates", null, async (_, _) =>
+            await Updater.CheckAsync(true, msg => _icon!.ShowBalloonTip(4000, "EdgeGlow", msg, ToolTipIcon.Info), quit));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Quit EdgeGlow", null, (_, _) => quit());
         menu.Opening += (_, _) => _startupItem.Checked = LaunchAtStartup.IsEnabled;
@@ -70,6 +72,9 @@ public sealed class TrayIcon : IDisposable
         if (text.Length > 63) text = text.Substring(0, 62) + "…";
         try { _icon.Text = text; } catch { }
     }
+
+    /// <summary>Silent check on launch: installs a newer release and restarts without any prompt.</summary>
+    public void CheckForUpdatesSilently(Action quit) => _ = Updater.CheckAsync(false, _ => { }, quit);
 
     public void Dispose()
     {

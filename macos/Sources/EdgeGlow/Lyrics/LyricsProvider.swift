@@ -92,8 +92,9 @@ final class LyricsProvider: @unchecked Sendable {
     private static let noisePatterns: [String] = [
         #"\((feat|ft|with|featuring)[.\s][^)]*\)"#,
         #"\((from|theme from|music from)[^)]*\)"#,
-        #"\((\d{4} )?(re-?master(ed)?|deluxe|bonus|explicit|single|album|radio)[^)]*\)"#,
-        #"\s-\s.*(remix|version|edit|mix|remaster|acoustic|live|instrumental).*$"#,
+        #"\((\d{4} )?(re-?master(ed)?|deluxe|bonus|explicit|single|album)[^)]*\)"#,
+        // Only the remaster suffix is noise; "- Remix", "- Radio Edit", "- Live" etc. identify a different recording.
+        #"\s-\s*(\d{4}\s+)?re-?master(ed)?(\s+\d{4})?\s*$"#,
         // YouTube noise
         #"[\[\(]\s*(official\s*)?(music\s*)?(lyric(s)?\s*)?(video|audio|visuali[sz]er|mv|hd|4k|hq)\s*[\]\)]"#,
         #"[\[\(]\s*(lyrics?|with lyrics?|lyric video)\s*[\]\)]"#,

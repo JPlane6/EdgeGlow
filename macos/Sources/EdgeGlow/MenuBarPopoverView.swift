@@ -4,6 +4,7 @@ import SwiftUI
 /// Dark control panel shown from the menu bar item.
 struct MenuBarPopoverView: View {
     @ObservedObject var state: AppState
+    @ObservedObject private var updater = Updater.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -671,10 +672,20 @@ struct MenuBarPopoverView: View {
 
     private var footer: some View {
         HStack {
-            Text(footerText)
+            Text(updater.status.text.isEmpty ? footerText : updater.status.text)
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
+                .lineLimit(1)
             Spacer()
+            Button {
+                updater.checkNow()
+            } label: {
+                Label("Check for Updates", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .disabled(updater.status.isBusy)
             Button {
                 NSApp.terminate(nil)
             } label: {

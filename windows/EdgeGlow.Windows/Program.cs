@@ -68,6 +68,7 @@ public static class Program
 
             var flyout = new FlyoutWindow(state, Quit);
             tray = new TrayIcon(state, flyout, Quit);
+            tray.CheckForUpdatesSilently(Quit);
 
             media = new MediaBridge(state);
             media.Start();

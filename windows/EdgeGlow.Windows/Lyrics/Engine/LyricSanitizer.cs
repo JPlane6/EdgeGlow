@@ -15,8 +15,6 @@ public static class LyricSanitizer
         @"\s[-–—]\s*from\s*[“""'‘].*$",
         @"[\[\(]\s*from\s+[^\]\)]*[\]\)]",
         @"[\[\(][^\]\)]*original motion picture soundtrack[^\]\)]*[\]\)]",
-        @"[\[\(][^\]\)]*(official|lyrical|lyric|full|music|audio|video|visuali[sz]er|hd|4k|hq|mv)[^\]\)]*(video|audio|song|visuali[sz]er|version)?[^\]\)]*[\]\)]",
-        @"[\[\(][^\]\)]*(slowed|reverb|lofi|lo-fi|flip|sped up|nightcore|8d|bass boosted)[^\]\)]*[\]\)]",
         @"\b(full\s+video|full\s+song|lyrical\s+video|official\s+video|official\s+audio)\b",
         @"\s[-–—|]\s*(t-series|sony music( india)?|yrf|zee music( company)?|saregama( music)?|tips( official| music)?|speed records|white hill music|times music|desi melodies|jio ?saavn|think music|lahari music|aditya music|eros now music|venus|universal music( india)?|warner music( india)?)\s*$",
         @"\s*\|\s.*$",
@@ -24,9 +22,26 @@ public static class LyricSanitizer
         @"\bVEVO\b",
     }.Select(p => new Regex(p, RegexOptions.IgnoreCase | RegexOptions.Compiled)).ToArray();
 
+    /// <summary>Tags that change the song's timeline (a remix is a different recording). Never stripped.</summary>
+    private static readonly Regex Structural = new(
+        @"\b(re-?mix(ed)?|mix|edit|acoustic|live|version|radio\s+edit|vip|instrumental|unplugged|reprise|extended|cover)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>Pure decoration inside brackets: YouTube labels and audio-effect tags.</summary>
+    private static readonly Regex BracketNoise = new(
+        @"\b(official|lyrical|lyrics?|full|music|audio|video|visuali[sz]er|hd|4k|hq|mv|slowed|reverb|lofi|lo-fi|flip|sped\s*up|nightcore|8d|bass\s*boosted|song)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex BracketGroup = new(@"[\[\(][^\]\)]*[\]\)]", RegexOptions.Compiled);
+
+    /// <summary>Removes a bracketed group only when it is noise and has no structural tag:
+    /// "(Official Video)" goes, "(Radio Edit)" and "[Tiesto Remix]" stay.</summary>
+    private static string StripBracketNoise(string s) =>
+        BracketGroup.Replace(s, m => !Structural.IsMatch(m.Value) && BracketNoise.IsMatch(m.Value) ? "" : m.Value);
+
     public static string Clean(string s)
     {
-        var o = s;
+        var o = StripBracketNoise(s);
         foreach (var re in Noise) o = re.Replace(o, "");
         while (o.Contains("  ")) o = o.Replace("  ", " ");
         return o.Trim(' ', '-', '–', '—', '|', '\t', '\n', '\r');
@@ -77,16 +92,18 @@ public static class LyricSanitizer
         return (double)x.Intersect(y).Count() / x.Union(y).Count();
     }
 
-    /// <summary>Candidate score for the fuzzy-search stage; null when the duration is out of tolerance.</summary>
+    /// <summary>Candidate score for the fuzzy-search stage; null when the duration is out of tolerance. A candidate
+    /// within <paramref name="priorityWindow"/> seconds of the playing track always outranks one outside it.</summary>
     public static double? Score(string title, string artist, string candidateTitle, string candidateArtist,
-                                double duration, double candidateDuration, double tolerance = 8)
+                                double duration, double candidateDuration, double tolerance = 8, double priorityWindow = 5)
     {
         if (duration > 0 && candidateDuration > 0 && Math.Abs(duration - candidateDuration) > tolerance) return null;
         var t = Similarity(title, candidateTitle);
         if (t < 0.34) return null;
         var a = artist.Length == 0 ? 0.5 : Math.Max(Similarity(artist, candidateArtist), Tokens(candidateArtist).IsSupersetOf(Tokens(artist)) ? 1 : 0);
         var d = duration > 0 && candidateDuration > 0 ? 1 - Math.Abs(duration - candidateDuration) / tolerance : 0.5;
-        return t * 3 + a * 1.5 + d;
+        var locked = duration > 0 && candidateDuration > 0 && Math.Abs(duration - candidateDuration) <= priorityWindow;
+        return t * 3 + a * 1.5 + d + (locked ? 10 : 0);
     }
 
     /// <summary>No synced lyrics exist: spread plain lines across the song in proportion to their length.</summary>

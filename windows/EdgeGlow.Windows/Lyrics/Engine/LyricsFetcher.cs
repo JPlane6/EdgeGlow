@@ -153,7 +153,7 @@ public sealed class LyricsFetcher
                     var s = score.Value - (synced ? 0 : 2.5);     // synced always beats plain
                     if (s > bestScore) { bestScore = s; best = rec; }
                 }
-                if (best != null && bestScore > 4.2 && !string.IsNullOrEmpty(best.syncedLyrics)) break;
+                if (best != null && bestScore > (duration > 0 ? 14.2 : 4.2) && !string.IsNullOrEmpty(best.syncedLyrics)) break;
             }
             catch { failed = true; }
         }

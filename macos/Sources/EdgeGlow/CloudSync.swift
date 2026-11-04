@@ -176,7 +176,7 @@ enum MediaMetadataService {
                 if !hasSynced { score -= 2.5 }   // synced always beats plain
                 if best == nil || score > best!.score { best = (score, record) }
             }
-            if let b = best, b.score > 4.2, !(b.record.syncedLyrics ?? "").isEmpty { break }
+            if let b = best, b.score > (duration > 0 ? 14.2 : 4.2), !(b.record.syncedLyrics ?? "").isEmpty { break }
         }
         if let record = best?.record {
             if let synced = record.syncedLyrics, !synced.isEmpty { return .found(synced) }
@@ -216,11 +216,13 @@ enum MediaMetadataService {
     /// Drops "- Remastered 2011", "(feat. X)" and similar decorations that break exact-match lookups.
     static func cleanTitle(_ title: String) -> String {
         var result = title
-        if let dash = result.range(of: " - ") { result = String(result[..<dash.lowerBound]) }
+        if let dash = result.range(of: " - "), !["remix", "mix", "edit", "acoustic", "live", "version", "vip"].contains(where: result[dash.upperBound...].lowercased().contains) {
+            result = String(result[..<dash.lowerBound])
+        }
         for (open, close) in [("(", ")"), ("[", "]")] {
             while let start = result.range(of: open), let end = result.range(of: close, range: start.upperBound..<result.endIndex) {
                 let inner = result[start.upperBound..<end.lowerBound].lowercased()
-                guard ["feat", "ft.", "with ", "remaster", "version", "edit"].contains(where: inner.contains) else { break }
+                guard ["feat", "ft.", "with ", "remaster"].contains(where: inner.contains) else { break }
                 result.removeSubrange(start.lowerBound..<end.upperBound)
             }
         }

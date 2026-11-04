@@ -9,8 +9,6 @@ enum LyricSanitizer {
         #"\s[-–—]\s*from\s*[“"'‘].*$"#,
         #"[\[\(]\s*from\s+[^\]\)]*[\]\)]"#,
         #"[\[\(][^\]\)]*original motion picture soundtrack[^\]\)]*[\]\)]"#,
-        #"[\[\(][^\]\)]*(official|lyrical|lyric|full|music|audio|video|visuali[sz]er|hd|4k|hq|mv)[^\]\)]*(video|audio|song|visuali[sz]er|version)?[^\]\)]*[\]\)]"#,
-        #"[\[\(][^\]\)]*(slowed|reverb|lofi|lo-fi|flip|sped up|nightcore|8d|bass boosted)[^\]\)]*[\]\)]"#,
         #"\b(full\s+video|full\s+song|lyrical\s+video|official\s+video|official\s+audio)\b"#,
         #"\s[-–—|]\s*(t-series|sony music( india)?|yrf|zee music( company)?|saregama( music)?|tips( official| music)?|speed records|white hill music|times music|desi melodies|jio ?saavn|think music|lahari music|aditya music|eros now music|venus|universal music( india)?|warner music( india)?)\s*$"#,
         #"\s*\|\s.*$"#,
@@ -18,8 +16,34 @@ enum LyricSanitizer {
         #"\bVEVO\b"#,
     ].compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
 
-    static func clean(_ s: String) -> String {
+    /// Tags that change the song's timeline (a remix is a different recording). Never stripped.
+    private static let structural = try! NSRegularExpression(
+        pattern: #"\b(re-?mix(ed)?|mix|edit|acoustic|live|version|radio\s+edit|vip|instrumental|unplugged|reprise|extended|cover)\b"#,
+        options: [.caseInsensitive])
+
+    /// Pure decoration inside brackets: YouTube labels and audio-effect tags.
+    private static let bracketNoise = try! NSRegularExpression(
+        pattern: #"\b(official|lyrical|lyrics?|full|music|audio|video|visuali[sz]er|hd|4k|hq|mv|slowed|reverb|lofi|lo-fi|flip|sped\s*up|nightcore|8d|bass\s*boosted|song)\b"#,
+        options: [.caseInsensitive])
+
+    private static let bracketGroup = try! NSRegularExpression(pattern: #"[\[\(][^\]\)]*[\]\)]"#)
+
+    /// Removes a bracketed group only when it is noise and carries no structural tag, so
+    /// "(Official Video)" goes but "(Radio Edit)" and "[Tiësto Remix]" stay.
+    private static func stripBracketNoise(_ s: String) -> String {
         var out = s
+        for m in bracketGroup.matches(in: s, range: NSRange(s.startIndex..., in: s)).reversed() {
+            guard let r = Range(m.range, in: out) else { continue }
+            let group = String(out[r])
+            let range = NSRange(group.startIndex..., in: group)
+            if structural.firstMatch(in: group, range: range) != nil { continue }
+            if bracketNoise.firstMatch(in: group, range: range) != nil { out.removeSubrange(r) }
+        }
+        return out
+    }
+
+    static func clean(_ s: String) -> String {
+        var out = stripBracketNoise(s)
         for re in noise {
             out = re.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: "")
         }
@@ -62,15 +86,17 @@ enum LyricSanitizer {
     }
 
     /// Candidate score for the LRCLIB search stage: title similarity dominates, duration proximity breaks ties.
-    /// Returns nil when the duration is further than `tolerance` away.
+    /// Returns nil when the duration is further than `tolerance` away. A candidate within `priorityWindow`
+    /// seconds of the playing track always outranks one outside it, so a remix locks onto its own timeline.
     static func score(title: String, artist: String, candidateTitle: String, candidateArtist: String,
-                      duration: Double, candidateDuration: Double, tolerance: Double = 8) -> Double? {
+                      duration: Double, candidateDuration: Double, tolerance: Double = 8, priorityWindow: Double = 5) -> Double? {
         if duration > 0, candidateDuration > 0, abs(duration - candidateDuration) > tolerance { return nil }
         let t = similarity(title, candidateTitle)
         guard t >= 0.34 else { return nil }
         let a = artist.isEmpty ? 0.5 : max(similarity(artist, candidateArtist), tokens(candidateArtist).isSuperset(of: tokens(artist)) ? 1 : 0)
         let d = duration > 0 && candidateDuration > 0 ? 1 - abs(duration - candidateDuration) / tolerance : 0.5
-        return t * 3 + a * 1.5 + d
+        let locked = duration > 0 && candidateDuration > 0 && abs(duration - candidateDuration) <= priorityWindow
+        return t * 3 + a * 1.5 + d + (locked ? 10 : 0)
     }
 
     // MARK: Plain lyrics → LRC
