@@ -295,9 +295,18 @@ final class GlowRenderer: ObservableObject {
     /// Per-layer alpha (index 0 = shortest, at the head) chosen so the stacked result follows
     /// brightness(x) = (1 - x)^1.6 along the comet, x = 0 at the head and 1 at the tail end.
     private static let cometLayerAlphas: [Double] = {
-        let n = cometLayerCount
-        let brightness = (0...n).map { j in j == n ? 0 : pow(1 - Double(j) / Double(n), 1.6) }
-        return (0..<n).map { j in 1 - (1 - brightness[j]) / (1 - brightness[j + 1]) }
+        let n: Int = cometLayerCount
+        var brightness: [Double] = []
+        for j in 0...n {
+            let x: Double = Double(j) / Double(n)
+            brightness.append(j == n ? 0.0 : pow(1.0 - x, 1.6))
+        }
+        var alphas: [Double] = []
+        for j in 0..<n {
+            let ratio: Double = (1.0 - brightness[j]) / (1.0 - brightness[j + 1])
+            alphas.append(1.0 - ratio)
+        }
+        return alphas
     }()
 
     private var cometHeadColor: RGBColor { primary.lerp(to: .white, t: 0.35) }
