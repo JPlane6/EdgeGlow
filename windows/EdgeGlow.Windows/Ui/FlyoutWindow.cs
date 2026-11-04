@@ -4,11 +4,13 @@ using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using EdgeGlow.Lyrics;
 
 namespace EdgeGlow;
 
@@ -59,6 +61,16 @@ public sealed class FlyoutWindow : Window
 
     // Style
     private readonly Dictionary<AnimationStyle, (Border Tile, TextBlock Glyph, TextBlock Label)> _tiles = new();
+    // Mode + lyrics
+    private readonly Dictionary<DisplayMode, (Border Tile, TextBlock Label)> _modeTiles = new();
+    private readonly Dictionary<LyricStyle, (Border Tile, TextBlock Label)> _lyricStyleTiles = new();
+    private readonly Dictionary<LyricFont, (Border Tile, TextBlock Label)> _fontTiles = new();
+    private readonly SliderControl _lyricScale = new(0.6, 1.8), _lyricVertical = new(0, 1);
+    private readonly TextBlock _lyricScaleValue = Value(), _lyricVerticalValue = Value();
+    private readonly SwitchControl _romanizeSwitch = new();
+    private readonly TextBlock _syncPill = Ui.Text("", 11, FontWeights.Medium, Ui.TextPrimary);
+    private readonly Border _syncPillBorder = new();
+    private readonly TextBlock _lyricsStatusText = Ui.Text("", 10, null, Ui.TextSecondary, wrap: true);
     private readonly TextBlock _styleCaption = Ui.Text("", 10, null, Ui.TextSecondary, wrap: true);
 
     // Displays
@@ -182,9 +194,11 @@ public sealed class FlyoutWindow : Window
         root.Children.Add(BuildHeader());
         root.Children.Add(Gap(14, BuildNowPlaying()));
         root.Children.Add(Gap(14, BuildAudioBanner()));
+        root.Children.Add(Gap(14, BuildModes()));
 
         var cards = new StackPanel();
-        cards.Children.Add(BuildColors());
+        cards.Children.Add(BuildLyrics());
+        cards.Children.Add(Gap(14, BuildColors()));
         cards.Children.Add(Gap(14, BuildStyle()));
         cards.Children.Add(Gap(14, BuildDisplays()));
         cards.Children.Add(Gap(14, BuildSliders()));
@@ -377,6 +391,89 @@ public sealed class FlyoutWindow : Window
         }
     }
 
+    /// <summary>A selectable tile used by the mode, lyric style and font pickers.</summary>
+    private Border Chip(string label, string? tooltip, Action click, out TextBlock text, double size = 10.5)
+    {
+        text = Ui.Text(label, size, FontWeights.Medium);
+        text.HorizontalAlignment = HorizontalAlignment.Center;
+        text.TextAlignment = TextAlignment.Center;
+        var chip = new Border
+        {
+            CornerRadius = new CornerRadius(8), Padding = new Thickness(6, 7, 6, 7), BorderThickness = new Thickness(1),
+            Cursor = Cursors.Hand, Child = text, ToolTip = tooltip, Margin = new Thickness(0, 0, 6, 6),
+        };
+        chip.MouseLeftButtonUp += (_, _) => click();
+        return chip;
+    }
+
+    private static void StyleChip(Border chip, TextBlock label, bool selected, RgbColor accent)
+    {
+        chip.Background = selected ? Ui.Brush(accent, 0.16) : new SolidColorBrush(Color.FromArgb(0x0A, 255, 255, 255));
+        chip.BorderBrush = selected ? Ui.Brush(accent, 0.55) : new SolidColorBrush(Color.FromArgb(0x14, 255, 255, 255));
+        label.Foreground = selected ? Ui.TextPrimary : Ui.TextSecondary;
+    }
+
+    /// <summary>Both / Glow Only / Lyrics Only / Off. Off tears down overlays and pauses audio capture and media polling.</summary>
+    private FrameworkElement BuildModes()
+    {
+        var grid = new UniformGrid { Columns = 4 };
+        foreach (var mode in Enum.GetValues<DisplayMode>())
+        {
+            var m = mode;
+            var chip = Chip(m.Title(), m == DisplayMode.Off ? "Standby: overlays, audio capture and media polling stop" : null, () => _s.DisplayMode = m, out var label, 11);
+            chip.Margin = new Thickness(0, 0, m == DisplayMode.Off ? 0 : 6, 0);
+            grid.Children.Add(chip);
+            _modeTiles[m] = (chip, label);
+        }
+        return Ui.Card(Ui.VStack(0, Ui.SectionTitle("Mode"), Gap(10, grid)));
+    }
+
+    private FrameworkElement BuildLyrics()
+    {
+        // Read-only audio sync pill: there is deliberately no manual timing offset.
+        _syncPillBorder.CornerRadius = new CornerRadius(10);
+        _syncPillBorder.Padding = new Thickness(9, 4, 9, 4);
+        _syncPillBorder.BorderThickness = new Thickness(1);
+        _syncPillBorder.HorizontalAlignment = HorizontalAlignment.Left;
+        _syncPillBorder.Child = _syncPill;
+        _syncPillBorder.ToolTip = "Lyrics are synced automatically to this output's measured latency and to the singer's voice";
+
+        var styles = new WrapPanel();
+        foreach (var style in Enum.GetValues<LyricStyle>())
+        {
+            var st = style;
+            var chip = Chip(st.Title(), null, () => _s.LyricStyle = st, out var label);
+            chip.Width = 90;
+            styles.Children.Add(chip);
+            _lyricStyleTiles[st] = (chip, label);
+        }
+        var fonts = new WrapPanel();
+        foreach (var font in Enum.GetValues<LyricFont>())
+        {
+            var f = font;
+            var chip = Chip(f.Title(), null, () => _s.LyricFont = f, out var label, 10);
+            chip.Width = 90;
+            fonts.Children.Add(chip);
+            _fontTiles[f] = (chip, label);
+        }
+
+        _lyricScale.ValueChanged += v => _s.LyricTextScale = v;
+        _lyricVertical.ValueChanged += v => _s.LyricVerticalPosition = v;
+        _romanizeSwitch.Toggled += on => _s.RomanizeLyrics = on;
+        _lyricsStatusText.Margin = new Thickness(0, 8, 0, 0);
+
+        return Ui.Card(Ui.VStack(0,
+            Ui.SectionTitle("Lyrics"),
+            Gap(8, _syncPillBorder),
+            Gap(10, styles),
+            Gap(4, Ui.Text("Font", 12, FontWeights.Medium)),
+            Gap(6, fonts),
+            Gap(4, SliderRow("Text Scale", _lyricScale, _lyricScaleValue)),
+            Gap(10, SliderRow("Vertical Position", _lyricVertical, _lyricVerticalValue)),
+            Gap(10, ToggleRow("Romanize Hindi / Punjabi / Urdu", Ui.Text("Devanagari, Gurmukhi and Arabic script to Latin", 10, null, Ui.TextSecondary), _romanizeSwitch)),
+            _lyricsStatusText));
+    }
+
     private FrameworkElement BuildStyle()
     {
         var tiles = new Grid();
@@ -567,6 +664,18 @@ public sealed class FlyoutWindow : Window
             parts.Label.Foreground = selected ? Ui.TextPrimary : Ui.TextSecondary;
         }
         _styleCaption.Text = s.AnimationStyle.Caption();
+
+        // Mode + lyrics
+        foreach (var (mode, parts) in _modeTiles) StyleChip(parts.Tile, parts.Label, s.DisplayMode == mode, primary);
+        foreach (var (style, parts) in _lyricStyleTiles) StyleChip(parts.Tile, parts.Label, s.LyricStyle == style, primary);
+        foreach (var (font, parts) in _fontTiles) StyleChip(parts.Tile, parts.Label, s.LyricFont == font, primary);
+        _syncPill.Text = s.AudioRoute.Pill;
+        _syncPillBorder.Background = Ui.Brush(primary, 0.10);
+        _syncPillBorder.BorderBrush = Ui.Brush(primary, 0.35);
+        SetSlider(_lyricScale, s.LyricTextScale, primary); _lyricScaleValue.Text = $"{(int)Math.Round(s.LyricTextScale * 100)}%";
+        SetSlider(_lyricVertical, s.LyricVerticalPosition, primary); _lyricVerticalValue.Text = $"{(int)Math.Round(s.LyricVerticalPosition * 100)}%";
+        _romanizeSwitch.Set(s.RomanizeLyrics, primary);
+        _lyricsStatusText.Text = s.LyricsStatus;
 
         RefreshDisplays(primary);
 

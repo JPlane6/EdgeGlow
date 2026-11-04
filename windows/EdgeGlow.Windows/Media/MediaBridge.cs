@@ -18,7 +18,7 @@ namespace EdgeGlow;
 public sealed class MediaBridge : IDisposable
 {
     private sealed record Reading(MediaSource Source, NowPlayingInfo Info, bool Playing, double PolledAt,
-                                  GlobalSystemMediaTransportControlsSession Session);
+                                  GlobalSystemMediaTransportControlsSession? Session);
 
     private static readonly string[] BrowserMarkers =
         { "chrome", "msedge", "edge", "brave", "firefox", "opera", "vivaldi", "thebrowser", "browser" };
@@ -50,13 +50,15 @@ public sealed class MediaBridge : IDisposable
             // SMTC unavailable (very old Windows build): fall through to system-audio-only mode.
         }
 
-        // System audio starting or stopping can change the active source.
+        // System audio starting or stopping (or leaving standby) can change the active source.
         var lastActive = _state.SystemAudioActive;
+        var lastMode = _state.DisplayMode;
         _state.Changed += () =>
         {
-            if (_state.SystemAudioActive != lastActive)
+            if (_state.SystemAudioActive != lastActive || _state.DisplayMode != lastMode)
             {
                 lastActive = _state.SystemAudioActive;
+                lastMode = _state.DisplayMode;
                 RequestPoll();
             }
         };
@@ -75,7 +77,7 @@ public sealed class MediaBridge : IDisposable
 
     private void RequestPoll()
     {
-        if (_disposed) return;
+        if (_disposed || _state.DisplayMode == DisplayMode.Off) return;     // standby: no media polling
         if (!_pollGate.Wait(0))
         {
             Interlocked.Exchange(ref _pollQueued, 1);
@@ -115,9 +117,8 @@ public sealed class MediaBridge : IDisposable
 
     private async Task PollAsync()
     {
-        if (_manager == null) { Apply(new List<Reading>()); return; }
-
         var readings = new List<Reading>();
+        if (_manager == null) { if (ScrapeSpotifyWindow() is { } scraped) readings.Add(scraped); Apply(readings); return; }
         foreach (var session in _manager.GetSessions())
         {
             try
@@ -133,8 +134,15 @@ public sealed class MediaBridge : IDisposable
                 var timeline = session.GetTimelineProperties();
                 var playing = status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
 
-                // SMTC reports the position as of LastUpdatedTime; extrapolate to now while playing.
+                // SMTC reports the position as of LastUpdatedTime; extrapolate to now while playing. The IPC round trip is
+                // measured around the timeline read: about 65 % of it has already elapsed when the answer arrives, and
+                // Spotify's reported position trails its mixer by roughly 155 ms.
+                var t0 = Clock.Now;
+                timeline = session.GetTimelineProperties();
                 var polledAt = Clock.Now;
+                var ipc = polledAt - t0;
+                var source0 = Classify(session.SourceAppUserModelId ?? "");
+                var compensation = ipc * 0.65 + (source0 == MediaSource.Spotify ? 0.155 : 0);
                 double? position = null, duration = null;
                 var span = timeline.EndTime - timeline.StartTime;
                 if (span.TotalSeconds > 0) duration = span.TotalSeconds;
@@ -142,17 +150,16 @@ public sealed class MediaBridge : IDisposable
                 {
                     var p = (timeline.Position - timeline.StartTime).TotalSeconds;
                     if (playing) p += Math.Max((DateTimeOffset.UtcNow - timeline.LastUpdatedTime).TotalSeconds, 0);
-                    position = Math.Max(p, 0);
+                    position = Math.Max(p + compensation, 0);
                 }
 
                 var source = Classify(session.SourceAppUserModelId ?? "");
                 var artist = props.Artist ?? "";
-                if (source == MediaSource.Browser)
-                {
-                    // YouTube Music tab titles: "Song - Artist - YouTube Music" style decorations are tab-only,
-                    // but the browser's MediaSession already supplies clean title/artist.
-                    position = null;
-                }
+                // Browsers (YouTube, YouTube Music, SoundCloud, JioSaavn, Gaana...) publish their HTML5 media position through
+                // MediaSession, so the timeline is used for them too. When a player reports none (position stays 0 and the
+                // timeline never updates), the audio-gated stopwatch takes over (see UpdateClock).
+                if (source != MediaSource.Spotify && source != MediaSource.AppleMusic && timeline.LastUpdatedTime.Year <= 2000) position = null;
+                if (duration is double dur0) _state.TrackDuration = dur0;
                 readings.Add(new Reading(source, new NowPlayingInfo(title, artist, null, position, duration), playing, polledAt, session));
             }
             catch
@@ -160,7 +167,26 @@ public sealed class MediaBridge : IDisposable
                 // One misbehaving session must not hide the others.
             }
         }
+        // Fallback: SMTC did not list Spotify (older builds, or it only exposes the session late). Spotify's window title
+        // is "Artist - Song" while a track plays; position then comes from the audio-gated stopwatch.
+        if (!readings.Any(r => r.Source == MediaSource.Spotify) && ScrapeSpotifyWindow() is { } fallback) readings.Add(fallback);
         Apply(readings);
+    }
+
+    private static Reading? ScrapeSpotifyWindow()
+    {
+        try
+        {
+            foreach (var p in System.Diagnostics.Process.GetProcessesByName("Spotify"))
+            {
+                var title = p.MainWindowTitle;
+                var dash = title.IndexOf(" - ", StringComparison.Ordinal);
+                if (dash <= 0 || title.StartsWith("Spotify", StringComparison.OrdinalIgnoreCase)) continue;
+                return new Reading(MediaSource.Spotify, new NowPlayingInfo(title[(dash + 3)..], title[..dash], null, null, null), true, Clock.Now, null);
+            }
+        }
+        catch { /* process access can fail; SMTC is the primary path */ }
+        return null;
     }
 
     private void Apply(List<Reading> readings)
@@ -225,7 +251,7 @@ public sealed class MediaBridge : IDisposable
     private void UpdateClock(MediaSource? source, NowPlayingInfo? info, bool playing, double? polledAt, bool trackChanged)
     {
         var clock = _state.PlaybackClock;
-        var hasPosition = source?.ReportsPosition() == true;
+        var hasPosition = info?.Position != null && source != MediaSource.SystemAudio;
         if (hasPosition && info?.Position is double position && polledAt is double at)
         {
             if (playing)
@@ -240,11 +266,19 @@ public sealed class MediaBridge : IDisposable
                 clock.Anchor(position, at);
             }
         }
+        else if (source is MediaSource.Browser or MediaSource.SystemAudio or MediaSource.Spotify or MediaSource.AppleMusic)
+        {
+            // No readable position: a stopwatch started at the track change that runs only while the PC is audibly
+            // playing (it pauses by itself after 1.5 s of silence).
+            var now = Clock.Now;
+            if (trackChanged) clock.Anchor(0, now);
+            clock.SetPlaying(_state.SystemAudioActive, now);
+        }
         else
         {
             clock.SetPlaying(false);
         }
-        _state.CloudSync.SetNativePlaybackActive(hasPosition && playing);
+        _state.CloudSync.SetNativePlaybackActive(source?.ReportsPosition() == true && playing);
     }
 
     // ---- Cloud Sync metadata ----

@@ -18,18 +18,23 @@ public sealed class DisplayManager : IDisposable
     private readonly AppState _state;
     private readonly Dispatcher _ui;
     private readonly Dictionary<string, OverlayWindow> _overlays = new();
+    private readonly Dictionary<string, LyricsOverlayWindow> _lyricOverlays = new();
+    private readonly LyricsModel _lyrics;
+    private DisplayMode _lastMode;
     private readonly DispatcherTimer _topmostTimer;
     private bool _rendering;
     private bool _refreshPending;
     private HashSet<string> _lastActive = new();
 
-    public DisplayManager(AppState state, Dispatcher ui)
+    public DisplayManager(AppState state, Dispatcher ui, LyricsModel lyrics)
     {
         _state = state;
+        _lyrics = lyrics;
         _ui = ui;
         _topmostTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) =>
         {
             foreach (var overlay in _overlays.Values) overlay.ReassertTopmost();
+            foreach (var overlay in _lyricOverlays.Values) overlay.ReassertTopmost();
         }, ui);
     }
 
@@ -50,6 +55,8 @@ public sealed class DisplayManager : IDisposable
         StopRendering();
         foreach (var overlay in _overlays.Values) overlay.Close();
         _overlays.Clear();
+        foreach (var overlay in _lyricOverlays.Values) overlay.Close();
+        _lyricOverlays.Clear();
     }
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e) => ScheduleRefresh();
@@ -58,7 +65,7 @@ public sealed class DisplayManager : IDisposable
     {
         // Only the active display set matters here; ignore everything else without touching the UI thread.
         var active = _state.ActiveDisplays;
-        if (active.SetEquals(_lastActive)) { EnsureRendering(); return; }
+        if (active.SetEquals(_lastActive) && _state.DisplayMode == _lastMode) { EnsureRendering(); return; }
         ScheduleRefresh();
     }
 
@@ -72,7 +79,7 @@ public sealed class DisplayManager : IDisposable
 
     private void EnsureRendering()
     {
-        if (_overlays.Count == 0) return;
+        if (_overlays.Count == 0 && _lyricOverlays.Count == 0) return;
         _ui.BeginInvoke(new Action(StartRendering));
     }
 
@@ -98,18 +105,38 @@ public sealed class DisplayManager : IDisposable
             _state.SetActiveDisplays(primary != null ? new[] { primary.Id } : Array.Empty<string>());
         }
 
+        var mode = _state.DisplayMode;
+        _lastMode = mode;
         var active = _state.ActiveDisplays;
         _lastActive = new HashSet<string>(active);
         var connected = monitors.ToDictionary(m => m.Id, m => m, StringComparer.Ordinal);
 
-        // Unchecked or disconnected: tear the overlay down.
-        foreach (var id in _overlays.Keys.Where(id => !active.Contains(id) || !connected.ContainsKey(id)).ToList())
+        // Standby / lyrics-only tears the glow down; unchecked or disconnected displays lose theirs too.
+        var glowIds = mode.GlowOn() ? active : new HashSet<string>();
+        var lyricIds = mode.LyricsOn() ? active : new HashSet<string>();
+        foreach (var id in _lyricOverlays.Keys.Where(id => !lyricIds.Contains(id) || !connected.ContainsKey(id)).ToList())
+        {
+            _lyricOverlays[id].Close();
+            _lyricOverlays.Remove(id);
+        }
+        foreach (var monitor in monitors.Where(m => lyricIds.Contains(m.Id)))
+        {
+            if (_lyricOverlays.TryGetValue(monitor.Id, out var existingLyrics)) existingLyrics.UpdateMonitor(monitor);
+            else
+            {
+                var overlay = new LyricsOverlayWindow(monitor);
+                _lyricOverlays[monitor.Id] = overlay;
+                overlay.Show();
+            }
+        }
+
+        foreach (var id in _overlays.Keys.Where(id => !glowIds.Contains(id) || !connected.ContainsKey(id)).ToList())
         {
             _overlays[id].Close();
             _overlays.Remove(id);
         }
 
-        foreach (var monitor in monitors.Where(m => active.Contains(m.Id)))
+        foreach (var monitor in monitors.Where(m => glowIds.Contains(m.Id)))
         {
             if (_overlays.TryGetValue(monitor.Id, out var existing))
             {
@@ -123,7 +150,7 @@ public sealed class DisplayManager : IDisposable
             }
         }
 
-        if (_overlays.Count > 0) StartRendering(); else StopRendering();
+        if (_overlays.Count > 0 || _lyricOverlays.Count > 0) StartRendering(); else StopRendering();
     }
 
     // ---- Render loop ----
@@ -149,6 +176,10 @@ public sealed class DisplayManager : IDisposable
         foreach (var overlay in _overlays.Values)
         {
             if (overlay.Render(now, _state)) anyAnimating = true;
+        }
+        foreach (var overlay in _lyricOverlays.Values)
+        {
+            if (overlay.Render(now, _state, _lyrics)) anyAnimating = true;
         }
         // Every overlay faded out and blanked: stop burning frames until the glow is lit again.
         if (!anyAnimating) StopRendering();

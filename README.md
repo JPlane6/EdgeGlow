@@ -110,7 +110,7 @@ cd windows
 
 Settings are stored in `%APPDATA%\EdgeGlow\settings.json`.
 
-## Lyrics (macOS)
+## Lyrics (macOS and Windows)
 
 EdgeGlow shows synced lyrics next to the edge glow. The popover's mode picker chooses **Both**, **Glow Only**,
 **Lyrics Only** or **Off** (Off stops rendering, audio capture and media polling).
@@ -132,6 +132,18 @@ EdgeGlow shows synced lyrics next to the edge glow. The popover's mode picker ch
 
 Debug helpers: `EdgeGlow --render-style-previews <dir>` renders every style to PNG,
 `EdgeGlow --test-lyrics` runs the lyric lookup against a few Hindi / Punjabi tracks.
+
+**Legibility on any wallpaper:** a dynamic dark scrim (rgba 8,8,12 at 78 % in the core, feathered) sits behind the
+focal words; every word gets a crisp 1.5 px dark outline plus a wide 14 px ambient shadow under its accent glow; and
+filaments / web rings / branch splines sit on a 3 px dark under-stroke. Verified over pure white and a light-mode browser page.
+
+**Windows:** the same 11 styles, 7 fonts, 4-state mode selector, automatic sync pill and Hindi pipeline live in
+`windows/EdgeGlow.Windows/Lyrics` (pure SkiaSharp: vector glyphs drawn through a perspective homography, so text stays razor sharp).
+Differences from macOS: icons are Segoe UI Emoji instead of SF Symbols, the CoreGlyphs / NLEmbedding icon tiers have no Windows
+counterpart (curated + Hinglish tables only), Urdu romanization is approximate (no vowel marks), fonts map to Segoe UI Variable,
+Georgia, Arial, Century Gothic, Bahnschrift and Bodoni MT, and Bluetooth is detected from the endpoint enumerator (BTHENUM).
+Browser tabs report their playhead through SMTC MediaSession. `windows/LyricPreview` is a console project that renders every
+style to PNG on any OS (`dotnet run -c Release -- <dir> white|browser|gradient [style ...]`, `-- --test-lyrics`).
 
 ## Releases
 

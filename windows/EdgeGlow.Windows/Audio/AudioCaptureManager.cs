@@ -23,7 +23,7 @@ public sealed class AudioCaptureManager : IMMNotificationClient, IDisposable
     /// <summary>KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, how WASAPI mix formats announce 32-bit float.</summary>
     private static readonly Guid IeeeFloatSubFormat = new("00000003-0000-0010-8000-00aa00389b71");
     private const double BassLow = 20, BassHigh = 150;
-    private const double VocalLow = 300, VocalHigh = 3000;
+    private const double VocalLow = 300, VocalHigh = 3400;
     /// <summary>Broadband level above which the PC counts as playing audio (switches back to the live FFT at once).</summary>
     private const double PresenceDb = -68.0;
     /// <summary>Broadband level below which the PC counts as silent...</summary>
@@ -67,6 +67,7 @@ public sealed class AudioCaptureManager : IMMNotificationClient, IDisposable
     private int _ringFilled;
     private double _sampleRate = 48_000;
     private double _bassEnvelope, _vocalEnvelope;
+    private double _prevVocalRatio, _fluxAverage, _lastOnsetTime;
     private readonly RollingPeak _bassPeak = new();
     private readonly RollingPeak _vocalPeak = new();
     private bool _captureRunning;
@@ -165,7 +166,7 @@ public sealed class AudioCaptureManager : IMMNotificationClient, IDisposable
     }
 
     /// <summary>At least one display shows the glow and the PC isn't asleep or locked.</summary>
-    private bool CaptureWanted => _state.ActiveDisplays.Count > 0 && !_screensAsleep && _sessionActive;
+    private bool CaptureWanted => _state.DisplayMode != DisplayMode.Off && _state.ActiveDisplays.Count > 0 && !_screensAsleep && _sessionActive;
 
     private void UpdateCapture()
     {
@@ -409,6 +410,17 @@ public sealed class AudioCaptureManager : IMMNotificationClient, IDisposable
         // moves the comets.
         var bassLevel = bassRatio;
         var vocalLevel = Math.Sqrt(vocalRatio);
+
+        // Vocal onset: a spectral-flux spike in the 300 Hz-3.4 kHz band, matched against lyric word starts so the
+        // playhead locks onto the singer's voice.
+        var flux = Math.Max(0, vocalRatio - _prevVocalRatio);
+        _prevVocalRatio = vocalRatio;
+        if (flux > 0.10 && flux > 2.2 * _fluxAverage && vocalRatio > 0.25 && now - _lastOnsetTime > 0.12 && _state.PlaybackClock.IsPlaying)
+        {
+            _lastOnsetTime = now;
+            _state.VocalLock.NoteOnset(_state.PlaybackClock.CurrentTrackTime(now), now);
+        }
+        _fluxAverage += (flux - _fluxAverage) * Math.Min(1, dt * 3);
 
         _bassEnvelope = Envelope(_bassEnvelope, bassLevel, dt, 0.012, 0.16);
         _vocalEnvelope = Envelope(_vocalEnvelope, vocalLevel, dt, 0.03, 0.35);

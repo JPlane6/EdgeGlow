@@ -8,8 +8,18 @@ namespace EdgeGlow;
 public static class Program
 {
     [STAThread]
-    public static int Main()
+    public static int Main(string[] args)
     {
+        // Debug: render every lyric style to PNG files over white / a light browser page / a gradient, then exit.
+        var previewAt = Array.IndexOf(args, "--render-style-previews");
+        if (previewAt >= 0)
+        {
+            var dir = args.Length > previewAt + 1 ? args[previewAt + 1] : "styles";
+            var bg = args.Length > previewAt + 2 ? args[previewAt + 2] : "white";
+            EdgeGlow.Lyrics.StylePreviews.Run(dir, bg);
+            return 0;
+        }
+
         // One instance per user session.
         using var mutex = new Mutex(true, @"Local\EdgeGlow.Windows.SingleInstance", out var isFirst);
         if (!isFirst) return 0;
@@ -25,6 +35,8 @@ public static class Program
 
         var state = AppState.Shared;
         DisplayManager? displays = null;
+        LyricsModel? lyrics = null;
+        AudioLatencyDetector? latency = null;
         MediaBridge? media = null;
         AudioCaptureManager? audio = null;
         TrayIcon? tray = null;
@@ -37,6 +49,8 @@ public static class Program
             state.SaveNow();
             tray?.Dispose();
             displays?.Dispose();
+            lyrics?.Dispose();
+            latency?.Dispose();
             audio?.Dispose();
             media?.Dispose();
             app.Shutdown();
@@ -44,7 +58,12 @@ public static class Program
 
         app.Startup += (_, _) =>
         {
-            displays = new DisplayManager(state, app.Dispatcher);
+            lyrics = new LyricsModel(state);
+            lyrics.Start();
+            latency = new AudioLatencyDetector(state);
+            latency.Start();
+
+            displays = new DisplayManager(state, app.Dispatcher, lyrics);
             displays.Start();
 
             var flyout = new FlyoutWindow(state, Quit);

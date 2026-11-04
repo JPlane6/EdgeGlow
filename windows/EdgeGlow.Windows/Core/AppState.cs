@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
+using EdgeGlow.Lyrics;
 
 namespace EdgeGlow;
 
@@ -74,6 +75,29 @@ public sealed class AppState
         set { if (!_availableDisplays.SequenceEqual(value)) { _availableDisplays = value; Raise(); } }
     }
 
+    // ---- Lyrics / display mode (persisted unless noted) ----
+    private DisplayMode _displayMode = DisplayMode.Both;
+    private LyricStyle _lyricStyle = LyricStyle.Constellation;
+    private LyricFont _lyricFont = LyricFont.SfPro;
+    private double _lyricTextScale = 1.0, _lyricVerticalPosition = 0.5;
+    private bool _romanizeLyrics = true;
+    private AudioRoute _audioRoute = AudioRoute.Unknown;
+    private double _trackDuration;
+    private string _lyricsStatus = "Waiting for music...";
+
+    public DisplayMode DisplayMode { get => _displayMode; set => Set(ref _displayMode, value, true); }
+    public LyricStyle LyricStyle { get => _lyricStyle; set => Set(ref _lyricStyle, value, true); }
+    public LyricFont LyricFont { get => _lyricFont; set => Set(ref _lyricFont, value, true); }
+    public double LyricTextScale { get => _lyricTextScale; set => Set(ref _lyricTextScale, Math.Clamp(value, 0.6, 1.8), true); }
+    public double LyricVerticalPosition { get => _lyricVerticalPosition; set => Set(ref _lyricVerticalPosition, Math.Clamp(value, 0, 1), true); }
+    /// <summary>Romanize Hindi / Punjabi / Urdu lyrics (Devanagari, Gurmukhi, Arabic script) into Latin.</summary>
+    public bool RomanizeLyrics { get => _romanizeLyrics; set => Set(ref _romanizeLyrics, value, true); }
+    /// <summary>Output route and its measured latency (read-only in the UI).</summary>
+    public AudioRoute AudioRoute { get => _audioRoute; set => Set(ref _audioRoute, value); }
+    public double TrackDuration { get => _trackDuration; set => Set(ref _trackDuration, value); }
+    public string LyricsStatus { get => _lyricsStatus; set => Set(ref _lyricsStatus, value); }
+    public VocalOnsetLock VocalLock { get; } = new();
+
     // ---- Persisted settings ----
     private double _thickness = 42;
     private double _glowSpread = 45;
@@ -128,7 +152,7 @@ public sealed class AppState
     /// <summary>Audio energies drive the glow: something is playing and either the FFT or Cloud Sync produces levels.</summary>
     public bool AudioReactive => IsPlaying && _levelSource != LevelSource.None;
     /// <summary>Whether the overlay should currently be lit at all.</summary>
-    public bool GlowActive => IsPlaying || _idleWhenPaused;
+    public bool GlowActive => (IsPlaying || _idleWhenPaused) && _displayMode.GlowOn();
     public RgbColor TargetPrimary => _useCustomColors ? _customPrimary : _extractedPrimary;
     public RgbColor TargetSecondary => _useCustomColors ? _customSecondary : _extractedSecondary;
 
@@ -147,6 +171,12 @@ public sealed class AppState
         public bool KineticEffects { get; set; } = true;
         public double CometLength { get; set; } = 0.18;
         public string[]? ActiveDisplays { get; set; }
+        public string? DisplayMode { get; set; }
+        public string? LyricStyle { get; set; }
+        public string? LyricFont { get; set; }
+        public double LyricTextScale { get; set; } = 1.0;
+        public double LyricVerticalPosition { get; set; } = 0.5;
+        public bool RomanizeLyrics { get; set; } = true;
     }
 
     public static string SettingsDirectory =>
@@ -178,6 +208,12 @@ public sealed class AppState
                     _kineticEffects = data.KineticEffects;
                     _cometLength = Math.Clamp(data.CometLength, 0.05, 0.45);
                     _activeDisplays = data.ActiveDisplays != null ? new HashSet<string>(data.ActiveDisplays) : null;
+                    _displayMode = DisplayModeExtensions.FromKey(data.DisplayMode);
+                    _lyricStyle = LyricStyleInfo.FromKey(data.LyricStyle);
+                    _lyricFont = LyricFontInfo.FromKey(data.LyricFont);
+                    _lyricTextScale = Math.Clamp(data.LyricTextScale, 0.6, 1.8);
+                    _lyricVerticalPosition = Math.Clamp(data.LyricVerticalPosition, 0, 1);
+                    _romanizeLyrics = data.RomanizeLyrics;
                 }
             }
         }
@@ -210,6 +246,8 @@ public sealed class AppState
                 CustomPrimary = _customPrimary.ToArray(), CustomSecondary = _customSecondary.ToArray(),
                 AnimationStyle = _animationStyle.Key(), KineticEffects = _kineticEffects, CometLength = _cometLength,
                 ActiveDisplays = _activeDisplays?.OrderBy(x => x, StringComparer.Ordinal).ToArray(),
+                DisplayMode = _displayMode.ToString(), LyricStyle = _lyricStyle.ToString(), LyricFont = _lyricFont.ToString(),
+                LyricTextScale = _lyricTextScale, LyricVerticalPosition = _lyricVerticalPosition, RomanizeLyrics = _romanizeLyrics,
             };
             File.WriteAllText(SettingsPath, JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true }));
         }
