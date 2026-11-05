@@ -95,17 +95,17 @@ struct MenuBarPopoverView: View {
                 }
             }
             colorRow
-            iconSlider("sun.max.fill", value: $state.intensity, range: 0.1...1.0)
-            iconSlider("bolt.fill", value: $state.reactivity, range: 0...1.5)
-            iconSlider("arrow.left.and.right.square", value: $state.thickness, range: 10...120)
-            iconSlider("circle.dashed", value: $state.glowSpread, range: 15...90)
+            iconSlider("sun.max.fill", "Brightness", value: $state.intensity, range: 0.1...1.0)
+            iconSlider("bolt.fill", "Intensity", value: $state.reactivity, range: 0...1.5)
+            iconSlider("arrow.left.and.right.square", "Thickness", value: $state.thickness, range: 10...120)
+            iconSlider("circle.dashed", "Spread", value: $state.glowSpread, range: 15...90)
             if state.animationStyle.usesComets {
-                iconSlider("gauge.with.needle", value: $state.cometLength, range: 0.05...0.45)
+                iconSlider("gauge.with.needle", "Length", value: $state.cometLength, range: 0.05...0.45)
             }
             HStack(spacing: 6) {
-                pill("atom", isOn: $state.kineticEffects)
+                pill("Kinetic", symbol: "atom", isOn: $state.kineticEffects)
                     .disabled(state.animationStyle == .sparksOnly)
-                pill("lock.fill", isOn: $state.showOnLockScreen)
+                pill("Lock", symbol: "lock.fill", isOn: $state.showOnLockScreen)
             }
         }
         .card()
@@ -148,7 +148,7 @@ struct MenuBarPopoverView: View {
                 colorDot(state.targetSecondary)
             }
             Spacer()
-            pill("paintpalette.fill", isOn: $state.useCustomColors)
+            pill("Colors", symbol: "paintpalette.fill", isOn: $state.useCustomColors)
         }
     }
 
@@ -172,24 +172,32 @@ struct MenuBarPopoverView: View {
     private var lyricsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Picker("", selection: $state.lyricStyle) {
-                    ForEach(LyricStyle.allCases) { Text($0.title).tag($0) }
+                labeledPicker("Style") {
+                    Picker("", selection: $state.lyricStyle) {
+                        ForEach(LyricStyle.allCases) { Text($0.title).tag($0) }
+                    }
                 }
-                Picker("", selection: $state.lyricFont) {
-                    ForEach(LyricFont.allCases.filter { $0 != .sfMono }) { Text($0.title).tag($0) }
+                labeledPicker("Font") {
+                    Picker("", selection: $state.lyricFont) {
+                        ForEach(LyricFont.allCases.filter { $0 != .sfMono }) { Text($0.title).tag($0) }
+                    }
                 }
             }
-            .labelsHidden()
             HStack(spacing: 8) {
-                HStack(spacing: 2) {
-                    Text("A").font(.system(size: 9, weight: .semibold))
-                    Slider(value: $state.lyricTextScale, in: 0.6...1.8)
-                        .controlSize(.small)
-                    Text("A").font(.system(size: 15, weight: .semibold))
+                HStack(spacing: 6) {
+                    HStack(spacing: 1) {
+                        Text("A").font(.system(size: 9, weight: .semibold))
+                        Text("A").font(.system(size: 14, weight: .semibold))
+                    }
+                    .frame(width: 16)
+                    Text("Size").font(.system(size: 11))
                 }
                 .foregroundStyle(.secondary)
+                .frame(width: sliderLabelWidth, alignment: .leading)
+                Slider(value: $state.lyricTextScale, in: 0.6...1.8)
+                    .controlSize(.small)
             }
-            iconSlider("arrow.up.and.down", value: $state.lyricVerticalPosition, range: 0...1)
+            iconSlider("arrow.up.and.down", "Position", value: $state.lyricVerticalPosition, range: 0...1)
             pill("Romanize", isOn: $state.romanizeLyrics)
         }
         .card()
@@ -232,31 +240,48 @@ struct MenuBarPopoverView: View {
 
     // MARK: Controls
 
-    private func iconSlider(_ symbol: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
+    private let sliderLabelWidth: CGFloat = 92
+
+    private func iconSlider(_ symbol: String, _ label: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: symbol)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11))
+                    .frame(width: 16)
+                Text(label)
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.secondary)
+            .frame(width: sliderLabelWidth, alignment: .leading)
             Slider(value: value, in: range)
                 .controlSize(.small)
         }
     }
 
-    /// Compact toggle pill: a text label, or an SF Symbol when the string is a symbol name.
-    private func pill(_ label: String, isOn: Binding<Bool>) -> some View {
+    private func labeledPicker<P: View>(_ label: String, @ViewBuilder picker: () -> P) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            picker()
+                .labelsHidden()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Compact toggle pill: an optional SF Symbol followed by a one-word label.
+    private func pill(_ label: String, symbol: String? = nil, isOn: Binding<Bool>) -> some View {
         let accent = state.targetPrimary.color
         let on = isOn.wrappedValue
-        let isSymbol = NSImage(systemSymbolName: label, accessibilityDescription: nil) != nil
         return Button {
             isOn.wrappedValue.toggle()
         } label: {
-            Group {
-                if isSymbol {
-                    Image(systemName: label).font(.system(size: 11, weight: .medium))
-                } else {
-                    Text(label).font(.system(size: 11, weight: .medium))
+            HStack(spacing: 5) {
+                if let symbol {
+                    Image(systemName: symbol).font(.system(size: 10, weight: .medium))
                 }
+                Text(label).font(.system(size: 11, weight: .medium))
             }
             .foregroundStyle(on ? Color.primary : Color.secondary)
             .padding(.horizontal, 12)

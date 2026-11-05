@@ -41,7 +41,7 @@ public sealed class FlyoutWindow : Window
     private readonly Ellipse _primaryDot = new() { Width = 18, Height = 18 }, _secondaryDot = new() { Width = 18, Height = 18 };
     private readonly Border _customPrimaryButton = new(), _customSecondaryButton = new();
     private readonly StackPanel _autoColors = new() { Orientation = Orientation.Horizontal }, _customColors = new() { Orientation = Orientation.Horizontal };
-    private readonly PillControl _overridePill = new("🎨", "Custom colors"), _kineticPill = new("✧", "Kinetic physics");
+    private readonly PillControl _overridePill = new("🎨 Colors"), _kineticPill = new("✧ Kinetic");
     private readonly SliderControl _intensity = new(0.1, 1.0), _reactivity = new(0, 1.5), _thickness = new(10, 120), _spread = new(15, 90), _comet = new(0.05, 0.45);
     private readonly Grid _cometRow = new();
 
@@ -214,14 +214,20 @@ public sealed class FlyoutWindow : Window
         return t;
     }
 
-    /// <summary>Leading glyph + slider on one row: no text label.</summary>
-    private static FrameworkElement IconSlider(string glyph, SliderControl slider)
+    private const double LabelColumn = 96;
+
+    /// <summary>Leading glyph and one-word label, then the slider, on one row.</summary>
+    private static FrameworkElement IconSlider(string glyph, string label, SliderControl slider)
     {
         var row = new Grid();
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(LabelColumn) });
         row.ColumnDefinitions.Add(new ColumnDefinition());
+        var name = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         var g = Glyph(glyph);
-        row.Children.Add(g);
+        g.Width = 20;
+        name.Children.Add(g);
+        name.Children.Add(Ui.Text(label, 11.5, null, Ui.TextSecondary));
+        row.Children.Add(name);
         Grid.SetColumn(slider, 1);
         row.Children.Add(slider);
         return row;
@@ -270,15 +276,15 @@ public sealed class FlyoutWindow : Window
         _comet.ValueChanged += v => _s.CometLength = v;
         _kineticPill.Toggled += on => _s.KineticEffects = on;
 
-        _cometRow.Children.Add(IconSlider("⏱", _comet));
+        _cometRow.Children.Add(IconSlider("⏱", "Length", _comet));
         _cometRow.Margin = new Thickness(0, 10, 0, 0);
 
         _glowPanel.Children.Add(tiles);
         _glowPanel.Children.Add(Gap(12, colorRow));
-        _glowPanel.Children.Add(Gap(10, IconSlider("☀", _intensity)));
-        _glowPanel.Children.Add(Gap(10, IconSlider("⚡", _reactivity)));
-        _glowPanel.Children.Add(Gap(10, IconSlider("↔", _thickness)));
-        _glowPanel.Children.Add(Gap(10, IconSlider("◌", _spread)));
+        _glowPanel.Children.Add(Gap(10, IconSlider("☀", "Brightness", _intensity)));
+        _glowPanel.Children.Add(Gap(10, IconSlider("⚡", "Intensity", _reactivity)));
+        _glowPanel.Children.Add(Gap(10, IconSlider("↔", "Thickness", _thickness)));
+        _glowPanel.Children.Add(Gap(10, IconSlider("◌", "Spread", _spread)));
         _glowPanel.Children.Add(_cometRow);
         _glowPanel.Children.Add(Gap(12, new StackPanel { Orientation = Orientation.Horizontal, Children = { _kineticPill } }));
         return _glowCard = Ui.Card(_glowPanel);
@@ -298,9 +304,11 @@ public sealed class FlyoutWindow : Window
         dropdowns.ColumnDefinitions.Add(new ColumnDefinition());
         dropdowns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
         dropdowns.ColumnDefinitions.Add(new ColumnDefinition());
-        Grid.SetColumn(_fontDropdown, 2);
-        dropdowns.Children.Add(_styleDropdown);
-        dropdowns.Children.Add(_fontDropdown);
+        var styleColumn = Labeled("Style", _styleDropdown);
+        var fontColumn = Labeled("Font", _fontDropdown);
+        Grid.SetColumn(fontColumn, 2);
+        dropdowns.Children.Add(styleColumn);
+        dropdowns.Children.Add(fontColumn);
 
         var fonts = Enum.GetValues<LyricFont>();
         var styles = Enum.GetValues<LyricStyle>();
@@ -312,24 +320,36 @@ public sealed class FlyoutWindow : Window
         _lyricVertical.ValueChanged += v => _s.LyricVerticalPosition = v;
         _romanizePill.Toggled += on => _s.RomanizeLyrics = on;
 
-        // Text size: small A, slider, large A.
+        // Text size: small/large A and "Size", then the slider.
         var size = new Grid();
-        size.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
+        size.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(LabelColumn) });
         size.ColumnDefinitions.Add(new ColumnDefinition());
-        size.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
-        var small = Ui.Text("A", 10, FontWeights.SemiBold, Ui.TextSecondary); small.HorizontalAlignment = HorizontalAlignment.Center; small.VerticalAlignment = VerticalAlignment.Center;
-        var large = Ui.Text("A", 17, FontWeights.SemiBold, Ui.TextSecondary); large.HorizontalAlignment = HorizontalAlignment.Center; large.VerticalAlignment = VerticalAlignment.Center;
+        var sizeName = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        var small = Ui.Text("A", 10, FontWeights.SemiBold, Ui.TextSecondary); small.VerticalAlignment = VerticalAlignment.Bottom;
+        var large = Ui.Text("A", 15, FontWeights.SemiBold, Ui.TextSecondary); large.VerticalAlignment = VerticalAlignment.Bottom;
+        var iconBox = new StackPanel { Orientation = Orientation.Horizontal, Width = 20 };
+        iconBox.Children.Add(small);
+        iconBox.Children.Add(large);
+        sizeName.Children.Add(iconBox);
+        sizeName.Children.Add(Ui.Text("Size", 11.5, null, Ui.TextSecondary));
         Grid.SetColumn(_lyricScale, 1);
-        Grid.SetColumn(large, 2);
-        size.Children.Add(small);
+        size.Children.Add(sizeName);
         size.Children.Add(_lyricScale);
-        size.Children.Add(large);
 
         _lyricsPanel.Children.Add(dropdowns);
         _lyricsPanel.Children.Add(Gap(12, size));
-        _lyricsPanel.Children.Add(Gap(10, IconSlider("↕", _lyricVertical)));
+        _lyricsPanel.Children.Add(Gap(10, IconSlider("↕", "Position", _lyricVertical)));
         _lyricsPanel.Children.Add(Gap(12, new StackPanel { Orientation = Orientation.Horizontal, Children = { _romanizePill } }));
         return _lyricsCard = Ui.Card(_lyricsPanel);
+    }
+
+    private static FrameworkElement Labeled(string label, FrameworkElement control)
+    {
+        var column = new StackPanel();
+        column.Children.Add(Ui.Text(label, 11, null, Ui.TextSecondary));
+        control.Margin = new Thickness(0, 3, 0, 0);
+        column.Children.Add(control);
+        return column;
     }
 
     private void OnDropdownOpenChanged(bool open)

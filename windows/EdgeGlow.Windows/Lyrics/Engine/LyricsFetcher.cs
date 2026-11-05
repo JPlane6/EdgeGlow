@@ -25,7 +25,7 @@ public sealed class LyricsFetcher
     private static HttpClient CreateClient()
     {
         var c = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-        c.DefaultRequestHeaders.UserAgent.ParseAdd("EdgeGlow/1.2.4 (https://github.com/JPlane6/EdgeGlow)");
+        c.DefaultRequestHeaders.UserAgent.ParseAdd("EdgeGlow/1.2.5 (https://github.com/JPlane6/EdgeGlow)");
         return c;
     }
 
