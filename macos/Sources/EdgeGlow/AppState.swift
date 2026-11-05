@@ -168,7 +168,6 @@ final class AppState: ObservableObject {
         static let glowSpread = "glowSpread"
         static let reactivity = "reactivity"
         static let intensity = "intensity"
-        static let idleWhenPaused = "idleWhenPaused"
         static let showOnLockScreen = "showOnLockScreen"
         static let useCustomColors = "useCustomColors"
         static let customPrimary = "customPrimary"
@@ -239,7 +238,6 @@ final class AppState: ObservableObject {
     @Published var glowSpread: Double { didSet { defaults.set(glowSpread, forKey: Key.glowSpread) } }
     @Published var reactivity: Double { didSet { defaults.set(reactivity, forKey: Key.reactivity) } }
     @Published var intensity: Double { didSet { defaults.set(intensity, forKey: Key.intensity) } }
-    @Published var idleWhenPaused: Bool { didSet { defaults.set(idleWhenPaused, forKey: Key.idleWhenPaused) } }
     /// Keep the overlays visible over the macOS lock screen.
     @Published var showOnLockScreen: Bool { didSet { defaults.set(showOnLockScreen, forKey: Key.showOnLockScreen) } }
     /// True while the screen is locked (driven by LockScreenMonitor).
@@ -271,7 +269,6 @@ final class AppState: ObservableObject {
             Key.glowSpread: 45.0,
             Key.reactivity: 1.0,
             Key.intensity: 0.85,
-            Key.idleWhenPaused: true,
             Key.showOnLockScreen: true,
             Key.useCustomColors: false,
             Key.kineticEffects: true,
@@ -283,7 +280,6 @@ final class AppState: ObservableObject {
         glowSpread = defaults.double(forKey: Key.glowSpread)
         reactivity = defaults.double(forKey: Key.reactivity)
         intensity = defaults.double(forKey: Key.intensity)
-        idleWhenPaused = defaults.bool(forKey: Key.idleWhenPaused)
         showOnLockScreen = defaults.bool(forKey: Key.showOnLockScreen)
         useCustomColors = defaults.bool(forKey: Key.useCustomColors)
         kineticEffects = defaults.bool(forKey: Key.kineticEffects)
@@ -327,8 +323,8 @@ final class AppState: ObservableObject {
     /// is producing levels.
     var audioReactive: Bool { isPlaying && levelSource != .none }
 
-    /// Whether the overlay should currently be lit at all.
-    var glowActive: Bool { displayMode.glowOn && (isPlaying || idleWhenPaused) }
+    /// Whether the overlay should currently be lit at all: only while verified music is playing.
+    var glowActive: Bool { displayMode.glowOn && isPlaying }
 
     var targetPrimary: RGBColor { useCustomColors ? customPrimary : extractedPrimary }
     var targetSecondary: RGBColor { useCustomColors ? customSecondary : extractedSecondary }

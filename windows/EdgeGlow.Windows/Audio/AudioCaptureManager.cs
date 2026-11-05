@@ -166,7 +166,7 @@ public sealed class AudioCaptureManager : IMMNotificationClient, IDisposable
     }
 
     /// <summary>At least one display shows the glow and the PC isn't asleep or locked.</summary>
-    private bool CaptureWanted => _state.DisplayMode != DisplayMode.Off && _state.ActiveDisplays.Count > 0 && !_screensAsleep && _sessionActive;
+    private bool CaptureWanted => _state.DisplayMode != DisplayMode.Off && _state.ActiveDisplays.Count > 0 && !_screensAsleep && _sessionActive && _state.IsPlaying;
 
     private void UpdateCapture()
     {

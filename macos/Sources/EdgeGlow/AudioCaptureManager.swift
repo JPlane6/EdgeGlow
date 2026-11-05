@@ -131,10 +131,10 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateCapture() }
             .store(in: &cancellables)
-        // Wake capture cleanly (e.g. after a failure) the moment any player starts.
+        // The tap runs only while verified music plays; it idles otherwise so calls and desktop sounds
+        // never reach the analysis.
         state.$playback
             .removeDuplicates()
-            .filter { $0 == .playing }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateCapture() }
             .store(in: &cancellables)
@@ -172,12 +172,12 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    /// An overlay is enabled on at least one display (not in standby) and the Mac isn't asleep or
-    /// switched to another user. The lyrics also use the FFT to lock onto vocal onsets.
+    /// Verified music is playing, an overlay is enabled on at least one display (not in standby) and the
+    /// Mac isn't asleep or switched to another user. The lyrics also use the FFT to lock onto vocal onsets.
     private var captureWanted: Bool {
         // Debug/testing switch: `EDGEGLOW_NO_AUDIO=1` skips the system audio capture (and its permission prompt).
         if ProcessInfo.processInfo.environment["EDGEGLOW_NO_AUDIO"] != nil { return false }
-        return state.displayMode != .off && !state.activeDisplays.isEmpty && !screensAsleep && sessionActive
+        return state.displayMode != .off && !state.activeDisplays.isEmpty && !screensAsleep && sessionActive && state.isPlaying
     }
 
     private func updateCapture() {

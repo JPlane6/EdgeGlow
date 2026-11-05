@@ -62,7 +62,6 @@ public sealed class LyricsModel : IDisposable
             _raw = null; _shown = null;
             _state.VocalLock.SetWordStarts(Array.Empty<double>());
             if (key.Length == 0) statusIfEmpty = !lyricsOn ? "Lyrics are off" : "Nothing playing";
-            else if (_state.MediaSource == MediaSource.SystemAudio) { statusIfEmpty = "No track information to look lyrics up"; key = ""; }
         }
         if (statusIfEmpty != null) { _state.LyricsStatus = statusIfEmpty; return; }
         _state.LyricsStatus = "Finding lyrics...";

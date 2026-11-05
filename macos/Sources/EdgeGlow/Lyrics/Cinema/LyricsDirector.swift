@@ -110,7 +110,7 @@ final class LyricsMetalView: MTKView, MTKViewDelegate {
             .sink { [weak self] hasLyrics, playing in
                 guard let self else { return }
                 self.isPaused = !(hasLyrics && playing)
-                if hasLyrics && !playing { self.draw() }       // one dimmed frame while paused
+                if !(hasLyrics && playing) { self.draw() }     // one clear frame: nothing shows unless music plays
             }
             .store(in: &cancellables)
         state.$lyricStyle
@@ -139,13 +139,13 @@ final class LyricsMetalView: MTKView, MTKViewDelegate {
             cb.present(drawable)
             cb.commit()
         }
-        guard let lyrics = model.lyrics, !lyrics.isEmpty else { return }
+        guard state.isPlaying, let lyrics = model.lyrics, !lyrics.isEmpty else { return }
         let now = CACurrentMediaTime()
         let pos = model.playhead(at: now)
         let levels = state.audioLevels.snapshot()
         let input = SceneInput(lyrics: lyrics, pos: pos, beat: model.rhythm.state(at: pos), theme: model.theme, size: drawableSize,
                                bass: levels.bass, vocal: levels.vocal, time: now, focusY: state.lyricVerticalPosition)
         let scene = director.advance(input, style: state.lyricStyle)
-        director.encode(input, style: state.lyricStyle, scene: scene, alpha: state.isPlaying ? 1 : 0.55, encoder: enc)
+        director.encode(input, style: state.lyricStyle, scene: scene, alpha: 1, encoder: enc)
     }
 }

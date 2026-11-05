@@ -47,17 +47,15 @@ public sealed class MediaBridge : IDisposable
         }
         catch
         {
-            // SMTC unavailable (very old Windows build): fall through to system-audio-only mode.
+            // SMTC unavailable (very old Windows build): only the Spotify window title is read.
         }
 
-        // System audio starting or stopping (or leaving standby) can change the active source.
-        var lastActive = _state.SystemAudioActive;
+        // Leaving standby re-polls at once.
         var lastMode = _state.DisplayMode;
         _state.Changed += () =>
         {
-            if (_state.SystemAudioActive != lastActive || _state.DisplayMode != lastMode)
+            if (_state.DisplayMode != lastMode)
             {
-                lastActive = _state.SystemAudioActive;
                 lastMode = _state.DisplayMode;
                 RequestPoll();
             }
@@ -106,13 +104,26 @@ public sealed class MediaBridge : IDisposable
 
     // ---- Polling ----
 
-    private static MediaSource Classify(string aumid)
+    /// <summary>Allowed music sources only; calls, games and other apps (Discord, Zoom, Teams...) return null and are ignored.</summary>
+    private static MediaSource? Classify(string aumid)
     {
         var id = aumid.ToLowerInvariant();
         if (id.Contains("spotify")) return MediaSource.Spotify;
         if (id.Contains("applemusic") || id.Contains("itunes") || id.Contains("apple music")) return MediaSource.AppleMusic;
         if (BrowserMarkers.Any(id.Contains)) return MediaSource.Browser;
-        return MediaSource.SystemAudio;
+        return null;
+    }
+
+    /// <summary>
+    /// A browser media session counts as music only when it publishes a real track: an artist plus an album or a
+    /// song-length duration (YouTube Music, Spotify Web, SoundCloud, JioSaavn, Gaana, Wynk, Apple Music Web, YouTube
+    /// music videos). Plain tab media without that metadata is ignored.
+    /// </summary>
+    private static bool LooksLikeMusic(string title, string artist, string album, double? duration)
+    {
+        if (title.Length == 0 || artist.Length == 0) return false;
+        if (album.Length > 0 || artist.EndsWith(" - Topic", StringComparison.OrdinalIgnoreCase)) return true;
+        return duration is >= 45 and <= 1200;
     }
 
     private async Task PollAsync()
@@ -141,8 +152,8 @@ public sealed class MediaBridge : IDisposable
                 timeline = session.GetTimelineProperties();
                 var polledAt = Clock.Now;
                 var ipc = polledAt - t0;
-                var source0 = Classify(session.SourceAppUserModelId ?? "");
-                var compensation = ipc * 0.65 + (source0 == MediaSource.Spotify ? 0.155 : 0);
+                if (Classify(session.SourceAppUserModelId ?? "") is not { } source) continue;   // not a music player
+                var compensation = ipc * 0.65 + (source == MediaSource.Spotify ? 0.155 : 0);
                 double? position = null, duration = null;
                 var span = timeline.EndTime - timeline.StartTime;
                 if (span.TotalSeconds > 0) duration = span.TotalSeconds;
@@ -153,11 +164,11 @@ public sealed class MediaBridge : IDisposable
                     position = Math.Max(p + compensation, 0);
                 }
 
-                var source = Classify(session.SourceAppUserModelId ?? "");
                 var artist = props.Artist ?? "";
+                if (source == MediaSource.Browser && !LooksLikeMusic(title, artist, props.AlbumTitle ?? "", duration)) continue;
                 // Browsers (YouTube, YouTube Music, SoundCloud, JioSaavn, Gaana...) publish their HTML5 media position through
                 // MediaSession, so the timeline is used for them too. When a player reports none (position stays 0 and the
-                // timeline never updates), the audio-gated stopwatch takes over (see UpdateClock).
+                // timeline never updates), a stopwatch driven by the session's own Playing state takes over (see UpdateClock).
                 if (source != MediaSource.Spotify && source != MediaSource.AppleMusic && timeline.LastUpdatedTime.Year <= 2000) position = null;
                 if (duration is double dur0) _state.TrackDuration = dur0;
                 readings.Add(new Reading(source, new NowPlayingInfo(title, artist, null, position, duration), playing, polledAt, session));
@@ -168,7 +179,7 @@ public sealed class MediaBridge : IDisposable
             }
         }
         // Fallback: SMTC did not list Spotify (older builds, or it only exposes the session late). Spotify's window title
-        // is "Artist - Song" while a track plays; position then comes from the audio-gated stopwatch.
+        // is "Artist - Song" while a track plays; position then comes from a stopwatch driven by the title-verified playing state.
         if (!readings.Any(r => r.Source == MediaSource.Spotify) && ScrapeSpotifyWindow() is { } fallback) readings.Add(fallback);
         Apply(readings);
     }
@@ -194,8 +205,8 @@ public sealed class MediaBridge : IDisposable
         Reading? Find(MediaSource wanted, bool isPlaying) =>
             readings.FirstOrDefault(r => r.Source == wanted && r.Playing == isPlaying);
 
-        // Priority: a playing native player, then live system audio (a playing browser/other app with
-        // metadata, else plain system audio), then a paused native player.
+        // Priority: a playing native player, then a playing music browser tab, then a paused native player.
+        // Raw system audio is never a source.
         MediaSource? source = null;
         NowPlayingInfo? info = null;
         var playingNow = false;
@@ -209,18 +220,11 @@ public sealed class MediaBridge : IDisposable
 
         var nativeSpotify = Find(MediaSource.Spotify, true);
         var nativeApple = Find(MediaSource.AppleMusic, true);
-        var audible = _state.SystemAudioActive;
         if (nativeSpotify != null) Choose(nativeSpotify);
         else if (nativeApple != null) Choose(nativeApple);
-        else if (readings.FirstOrDefault(r => r.Playing && r.Source is MediaSource.Browser or MediaSource.SystemAudio) is { } other)
+        else if (readings.FirstOrDefault(r => r.Playing && r.Source == MediaSource.Browser) is { } other)
         {
-            // Any session SMTC reports as Playing wins over paused or ghost sessions, whether or not the
-            // audio tap has noticed sound yet.
             Choose(other);
-        }
-        else if (audible)
-        {
-            source = MediaSource.SystemAudio; playingNow = true;
         }
         else
         {
@@ -255,7 +259,7 @@ public sealed class MediaBridge : IDisposable
     private void UpdateClock(MediaSource? source, NowPlayingInfo? info, bool playing, double? polledAt, bool trackChanged)
     {
         var clock = _state.PlaybackClock;
-        var hasPosition = info?.Position != null && source != MediaSource.SystemAudio;
+        var hasPosition = info?.Position != null;
         if (hasPosition && info?.Position is double position && polledAt is double at)
         {
             if (playing)
@@ -270,13 +274,13 @@ public sealed class MediaBridge : IDisposable
                 clock.Anchor(position, at);
             }
         }
-        else if (source is MediaSource.Browser or MediaSource.SystemAudio or MediaSource.Spotify or MediaSource.AppleMusic)
+        else if (source != null)
         {
-            // No readable position: a stopwatch started at the track change that runs only while the PC is audibly
-            // playing (it pauses by itself after 1.5 s of silence).
+            // No readable position: a stopwatch started at the track change that runs only while the player itself
+            // reports Playing.
             var now = Clock.Now;
             if (trackChanged) clock.Anchor(0, now);
-            clock.SetPlaying(_state.SystemAudioActive, now);
+            clock.SetPlaying(playing, now);
         }
         else
         {

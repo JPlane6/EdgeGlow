@@ -148,7 +148,7 @@ final class GlowRenderer: ObservableObject {
 
         let style = state.animationStyle
         let playing = state.isPlaying
-        let targetPresence = playing ? 1.0 : (state.idleWhenPaused ? 0.55 : 0.0)
+        let targetPresence = playing ? 1.0 : 0.0
         presence += (targetPresence - presence) * approach(2.5)
 
         // Liquid crossfade toward the current album colors.

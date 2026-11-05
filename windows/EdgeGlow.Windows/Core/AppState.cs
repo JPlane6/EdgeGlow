@@ -103,7 +103,6 @@ public sealed class AppState
     private double _glowSpread = 45;
     private double _reactivity = 1.0;
     private double _intensity = 0.85;
-    private bool _idleWhenPaused = true;
     private bool _useCustomColors;
     private RgbColor _customPrimary = RgbColor.NeonCyan;
     private RgbColor _customSecondary = RgbColor.NeonMagenta;
@@ -116,7 +115,6 @@ public sealed class AppState
     public double GlowSpread { get => _glowSpread; set => Set(ref _glowSpread, value, true); }
     public double Reactivity { get => _reactivity; set => Set(ref _reactivity, value, true); }
     public double Intensity { get => _intensity; set => Set(ref _intensity, value, true); }
-    public bool IdleWhenPaused { get => _idleWhenPaused; set => Set(ref _idleWhenPaused, value, true); }
     public bool UseCustomColors { get => _useCustomColors; set => Set(ref _useCustomColors, value, true); }
     public RgbColor CustomPrimary { get => _customPrimary; set => Set(ref _customPrimary, value, true); }
     public RgbColor CustomSecondary { get => _customSecondary; set => Set(ref _customSecondary, value, true); }
@@ -152,7 +150,7 @@ public sealed class AppState
     /// <summary>Audio energies drive the glow: something is playing and either the FFT or Cloud Sync produces levels.</summary>
     public bool AudioReactive => IsPlaying && _levelSource != LevelSource.None;
     /// <summary>Whether the overlay should currently be lit at all.</summary>
-    public bool GlowActive => (IsPlaying || _idleWhenPaused) && _displayMode.GlowOn();
+    public bool GlowActive => IsPlaying && _displayMode.GlowOn();
     public RgbColor TargetPrimary => _useCustomColors ? _customPrimary : _extractedPrimary;
     public RgbColor TargetSecondary => _useCustomColors ? _customSecondary : _extractedSecondary;
 
@@ -163,7 +161,6 @@ public sealed class AppState
         public double GlowSpread { get; set; } = 45;
         public double Reactivity { get; set; } = 1.0;
         public double Intensity { get; set; } = 0.85;
-        public bool IdleWhenPaused { get; set; } = true;
         public bool UseCustomColors { get; set; }
         public double[]? CustomPrimary { get; set; }
         public double[]? CustomSecondary { get; set; }
@@ -200,7 +197,6 @@ public sealed class AppState
                     _glowSpread = Math.Clamp(data.GlowSpread, 15, 90);
                     _reactivity = Math.Clamp(data.Reactivity, 0, 1.5);
                     _intensity = Math.Clamp(data.Intensity, 0.1, 1.0);
-                    _idleWhenPaused = data.IdleWhenPaused;
                     _useCustomColors = data.UseCustomColors;
                     _customPrimary = RgbColor.FromArray(data.CustomPrimary) ?? RgbColor.NeonCyan;
                     _customSecondary = RgbColor.FromArray(data.CustomSecondary) ?? RgbColor.NeonMagenta;
@@ -242,7 +238,7 @@ public sealed class AppState
             var data = new SettingsData
             {
                 Thickness = _thickness, GlowSpread = _glowSpread, Reactivity = _reactivity, Intensity = _intensity,
-                IdleWhenPaused = _idleWhenPaused, UseCustomColors = _useCustomColors,
+                UseCustomColors = _useCustomColors,
                 CustomPrimary = _customPrimary.ToArray(), CustomSecondary = _customSecondary.ToArray(),
                 AnimationStyle = _animationStyle.Key(), KineticEffects = _kineticEffects, CometLength = _cometLength,
                 ActiveDisplays = _activeDisplays?.OrderBy(x => x, StringComparer.Ordinal).ToArray(),

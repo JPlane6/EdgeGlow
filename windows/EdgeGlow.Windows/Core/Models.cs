@@ -88,7 +88,7 @@ public static class AnimationStyleExtensions
 }
 
 /// <summary>Where the current music (and its metadata) comes from, in detection priority order.</summary>
-public enum MediaSource { Spotify, AppleMusic, Browser, SystemAudio }
+public enum MediaSource { Spotify, AppleMusic, Browser }
 
 public static class MediaSourceExtensions
 {
@@ -96,15 +96,13 @@ public static class MediaSourceExtensions
     {
         MediaSource.Spotify => "Spotify",
         MediaSource.AppleMusic => "Apple Music",
-        MediaSource.Browser => "Browser",
-        _ => "System Audio",
+        _ => "Browser",
     };
 
     public static string Glyph(this MediaSource s) => s switch
     {
         MediaSource.Spotify or MediaSource.AppleMusic => "♪",
-        MediaSource.Browser => "◎",
-        _ => "♫",
+        _ => "◎",
     };
 
     /// <summary>Native players report a trustworthy track position, which Cloud Sync needs.</summary>

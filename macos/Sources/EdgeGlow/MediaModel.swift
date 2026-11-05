@@ -8,17 +8,14 @@ import QuartzCore
 enum MediaSource: String, Equatable {
     case spotify
     case appleMusic
-    /// A music.youtube.com tab in a browser; playback itself is detected from system audio.
+    /// A music tab in a browser; playback is read from the tab's media element.
     case youTubeMusic
-    /// Any other app making sound, with no track metadata.
-    case systemAudio
 
     var displayName: String {
         switch self {
         case .spotify: return "Spotify"
         case .appleMusic: return "Apple Music"
         case .youTubeMusic: return "YouTube Music"
-        case .systemAudio: return "System Audio"
         }
     }
 
@@ -26,7 +23,6 @@ enum MediaSource: String, Equatable {
         switch self {
         case .spotify, .appleMusic: return "music.note"
         case .youTubeMusic: return "globe"
-        case .systemAudio: return "speaker.wave.2.fill"
         }
     }
 

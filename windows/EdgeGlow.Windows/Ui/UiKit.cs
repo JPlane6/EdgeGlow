@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
@@ -154,5 +156,126 @@ internal sealed class SliderControl : Grid
         var x = usable * ratio;
         _thumb.Margin = new Thickness(x, 0, 0, 0);
         _fill.Width = x + 7;
+    }
+}
+
+/// <summary>A compact toggle pill (text or glyph) that lights up with the accent color when on.</summary>
+internal sealed class PillControl : Border
+{
+    private readonly TextBlock _label;
+    public bool IsOn { get; private set; }
+    public event Action<bool>? Toggled;
+
+    public PillControl(string label, string? tooltip = null)
+    {
+        _label = Ui.Text(label, 11, FontWeights.Medium, Ui.TextSecondary);
+        _label.FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI, Segoe UI Symbol");
+        CornerRadius = new CornerRadius(12);
+        Padding = new Thickness(12, 4, 12, 4);
+        BorderThickness = new Thickness(1);
+        Cursor = Cursors.Hand;
+        ToolTip = tooltip;
+        Child = _label;
+        Margin = new Thickness(0, 0, 6, 0);
+        MouseLeftButtonUp += (_, _) => { if (IsEnabled) Toggled?.Invoke(!IsOn); };
+    }
+
+    public void Set(bool on, RgbColor accent)
+    {
+        IsOn = on;
+        Background = on ? Ui.Brush(accent, 0.2) : new SolidColorBrush(Color.FromArgb(0x0D, 255, 255, 255));
+        BorderBrush = on ? Ui.Brush(accent, 0.55) : new SolidColorBrush(Color.FromArgb(0x1A, 255, 255, 255));
+        _label.Foreground = on ? Ui.TextPrimary : Ui.TextSecondary;
+        Opacity = IsEnabled ? 1 : 0.45;
+    }
+}
+
+/// <summary>A dark, label-less dropdown: the current value with a caret, opening a popup list.</summary>
+internal sealed class DropdownControl : Border
+{
+    private readonly TextBlock _value = Ui.Text("", 11.5, FontWeights.Medium);
+    private readonly Popup _popup;
+    private readonly StackPanel _list = new();
+    private readonly List<(Border Row, TextBlock Text)> _rows = new();
+    private int _selected = -1;
+    private RgbColor _accent = RgbColor.NeonCyan;
+
+    public event Action<int>? Selected;
+    public event Action<bool>? OpenChanged;
+
+    public DropdownControl(IReadOnlyList<string> items)
+    {
+        CornerRadius = new CornerRadius(8);
+        Padding = new Thickness(10, 6, 8, 6);
+        BorderThickness = new Thickness(1);
+        Background = new SolidColorBrush(Color.FromArgb(0x0F, 255, 255, 255));
+        BorderBrush = new SolidColorBrush(Color.FromArgb(0x1A, 255, 255, 255));
+        Cursor = Cursors.Hand;
+
+        var caret = Ui.Text("▾", 10, null, Ui.TextSecondary);
+        caret.Margin = new Thickness(6, 0, 0, 0);
+        caret.VerticalAlignment = VerticalAlignment.Center;
+        var dock = new DockPanel();
+        DockPanel.SetDock(caret, Dock.Right);
+        dock.Children.Add(caret);
+        dock.Children.Add(_value);
+        Child = dock;
+
+        for (var i = 0; i < items.Count; i++)
+        {
+            var index = i;
+            var text = Ui.Text(items[i], 12);
+            var row = new Border { Padding = new Thickness(10, 6, 10, 6), CornerRadius = new CornerRadius(6), Cursor = Cursors.Hand, Child = text };
+            row.MouseEnter += (_, _) => { if (index != _selected) row.Background = new SolidColorBrush(Color.FromArgb(0x14, 255, 255, 255)); };
+            row.MouseLeave += (_, _) => Paint();
+            row.MouseLeftButtonUp += (_, e) => { e.Handled = true; _popup!.IsOpen = false; Selected?.Invoke(index); };
+            _rows.Add((row, text));
+            _list.Children.Add(row);
+        }
+
+        _popup = new Popup
+        {
+            PlacementTarget = this,
+            Placement = PlacementMode.Bottom,
+            StaysOpen = false,
+            AllowsTransparency = true,
+            Child = new Border
+            {
+                Margin = new Thickness(0, 4, 0, 8),
+                Padding = new Thickness(4),
+                CornerRadius = new CornerRadius(10),
+                BorderThickness = new Thickness(1),
+                BorderBrush = Ui.CardBorder,
+                Background = new SolidColorBrush(Color.FromRgb(0x24, 0x24, 0x28)),
+                Child = new ScrollViewer { MaxHeight = 220, VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Content = _list },
+            },
+        };
+        _popup.Opened += (_, _) => OpenChanged?.Invoke(true);
+        _popup.Closed += (_, _) => OpenChanged?.Invoke(false);
+        MouseLeftButtonUp += (_, _) =>
+        {
+            if (_popup.IsOpen) { _popup.IsOpen = false; return; }
+            ((Border)_popup.Child).MinWidth = ActualWidth;
+            Paint();
+            _popup.IsOpen = true;
+        };
+    }
+
+    public void Set(int index, RgbColor accent)
+    {
+        _selected = index;
+        _accent = accent;
+        _value.Text = index >= 0 && index < _rows.Count ? _rows[index].Text.Text : "";
+        Paint();
+    }
+
+    private void Paint()
+    {
+        for (var i = 0; i < _rows.Count; i++)
+        {
+            var on = i == _selected;
+            _rows[i].Row.Background = on ? Ui.Brush(_accent, 0.2) : Brushes.Transparent;
+            _rows[i].Text.Foreground = on ? Ui.TextPrimary : Ui.TextSecondary;
+        }
     }
 }

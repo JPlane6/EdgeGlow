@@ -124,8 +124,8 @@ extension AppleScriptProvider {
     return "STOPPED"
     """)
 
-    /// Browsers that can host a music.youtube.com tab. Their tabs don't say whether they're playing, so
-    /// the bridge only asks while system audio is actually flowing.
+    /// Browsers that can host a music tab. A tab only counts as playing when its media element reports
+    /// `paused == false`.
     static let youTubeMusicBrowsers: [AppleScriptProvider] = [
         ("Safari", "com.apple.Safari", "name"),
         ("Google Chrome", "com.google.Chrome", "title"),
@@ -134,8 +134,8 @@ extension AppleScriptProvider {
         ("Brave Browser", "com.brave.Browser", "title"),
     ].map { name, bundleID, titleProperty in
         // Chromium browsers: `execute <tab> javascript`; Safari: `do JavaScript … in <tab>`. Both need
-        // "Allow JavaScript from Apple Events"; when it is off the calls fail and the bridge falls back to the
-        // audio-gated stopwatch, so lyrics still work.
+        // "Allow JavaScript from Apple Events"; when it is off the tab's play state can't be verified, so it
+        // is treated as not playing (EdgeGlow never guesses from system audio).
         func js(_ expr: String) -> String {
             titleProperty == "name"
                 ? "do JavaScript \"\(expr)\" in t"
@@ -163,7 +163,7 @@ extension AppleScriptProvider {
                                 set du to (\(js("String(\(media).duration)"))) as string
                                 set paused to (\(js("String(\(media).paused)"))) as string
                             end try
-                            if paused is not "true" then return "PLAYING|||" & (\(titleProperty) of t) & "||||||" & ct & "|||" & du
+                            if paused is "false" then return "PLAYING|||" & (\(titleProperty) of t) & "||||||" & ct & "|||" & du
                             if fallback is "" then set fallback to "PAUSED|||" & (\(titleProperty) of t) & "||||||" & ct & "|||" & du
                         end if
                     end repeat
@@ -191,8 +191,8 @@ extension AppleScriptProvider {
     }
 }
 
-/// Detects what's playing across providers, in priority order: Spotify, Apple Music, then any system
-/// audio (named after a YouTube Music tab when there is one). Publishes the winner into AppState,
+/// Detects what's playing across verified music sources, in priority order: Spotify, Apple Music, then a
+/// music browser tab. Raw system audio is never a source. Publishes the winner into AppState,
 /// drives the PlaybackClock, and starts artwork and Cloud Sync lookups on track changes.
 final class MediaBridge {
     private static let notifications = [
@@ -226,14 +226,6 @@ final class MediaBridge {
         for name in Self.notifications {
             DistributedNotificationCenter.default().addObserver(self, selector: #selector(playerNotification(_:)), name: name, object: nil)
         }
-        // System audio starting or stopping can change the active source (or reveal a YouTube Music tab).
-        // receive(on:) defers past @Published's willSet so poll() sees the new value.
-        state.$systemAudioActive
-            .removeDuplicates()
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.poll() }
-            .store(in: &cancellables)
         // Standby stops all polling (no AppleEvents, no timers); leaving it resumes at once.
         state.$displayMode
             .map { $0 != .off }
@@ -278,7 +270,7 @@ final class MediaBridge {
             return
         }
         let natives = nativeProviders.filter(\.isRunning)
-        let browsers = state.systemAudioActive ? browserProviders.filter(\.isRunning) : []
+        let browsers = browserProviders.filter(\.isRunning)
         pollInFlight = true
         scriptQueue.async { [weak self] in
             var readings = natives.map { ($0, $0.read()) }
@@ -286,8 +278,7 @@ final class MediaBridge {
                 if case .active(_, true, _) = reading.1 { return true }
                 return false
             }
-            // A browser tab is only worth an AppleEvent when audio is flowing and no native player
-            // accounts for it.
+            // Browser tabs are only asked when no native player is already playing.
             if !nativePlaying {
                 for browser in browsers {
                     let reading = browser.read()
@@ -324,18 +315,14 @@ final class MediaBridge {
             return nil
         }
 
-        // Priority: a playing native player, then live system audio, then a paused native player.
+        // Priority: a playing native player, a playing music tab, then a paused native player.
         var chosen: (source: MediaSource, info: NowPlayingInfo?, playing: Bool, polledAt: CFTimeInterval?)?
         if let (info, at) = find(.spotify, playing: true) {
             chosen = (.spotify, info, true, at)
         } else if let (info, at) = find(.appleMusic, playing: true) {
             chosen = (.appleMusic, info, true, at)
-        } else if state.systemAudioActive {
-            if let (info, _) = find(.youTubeMusic, playing: true) {
-                chosen = (.youTubeMusic, info, true, nil)
-            } else {
-                chosen = (.systemAudio, nil, true, nil)
-            }
+        } else if let (info, at) = find(.youTubeMusic, playing: true) {
+            chosen = (.youTubeMusic, info, true, at)
         } else if let (info, at) = find(.spotify, playing: false) {
             chosen = (.spotify, info, false, at)
         } else if let (info, at) = find(.appleMusic, playing: false) {
@@ -380,12 +367,6 @@ final class MediaBridge {
                 clock.setPlaying(false)
                 clock.anchor(position: position, at: polledAt)
             }
-        } else if source == .youTubeMusic || source == .systemAudio {
-            // No readable position (JavaScript from Apple Events is off, or an app that exposes nothing):
-            // a stopwatch started at the track change that runs only while the Mac is audibly playing.
-            let now = CACurrentMediaTime()
-            if trackChanged { clock.anchor(position: 0, at: now) }
-            clock.setPlaying(state.systemAudioActive, at: now)
         } else {
             clock.setPlaying(false)
         }

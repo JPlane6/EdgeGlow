@@ -28,36 +28,6 @@ public sealed class LyricsOverlayWindow : Window
     private bool _cleared;
     private double _lastFrame;
     private double _alpha;
-    private string? _drawnStatus;
-
-    private static string? DebugStatus(AppState state, LyricsModel model)
-    {
-        if (state.MediaSource == null || state.TrackName.Length == 0) return "Waiting for media...";
-        if (state.LyricsStatus == LyricsModel.NotFoundStatus) return $"Lyrics not found for: {state.TrackName}";
-        return null;
-    }
-
-    private static void DrawStatus(WriteableBitmap bitmap, string text)
-    {
-        bitmap.Lock();
-        try
-        {
-            var info = new SKImageInfo(bitmap.PixelWidth, bitmap.PixelHeight, SKColorType.Bgra8888, SKAlphaType.Premul);
-            using var surface = SKSurface.Create(info, bitmap.BackBuffer, bitmap.BackBufferStride);
-            var canvas = surface.Canvas;
-            canvas.Clear(SKColors.Transparent);
-            var size = Math.Max(18f, info.Height * 0.028f);
-            var y = info.Height / 2f;
-            using var outline = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 3f, StrokeJoin = SKStrokeJoin.Round, Color = new SKColor(8, 8, 12, 200), TextSize = size };
-            using var fill = new SKPaint { IsAntialias = true, Color = new SKColor(255, 255, 255, 235), TextSize = size };
-            var x = info.Width / 2f - fill.MeasureText(text) / 2f;
-            canvas.DrawText(text, x, y, outline);
-            canvas.DrawText(text, x, y, fill);
-            canvas.Flush();
-            bitmap.AddDirtyRect(new Int32Rect(0, 0, bitmap.PixelWidth, bitmap.PixelHeight));
-        }
-        finally { bitmap.Unlock(); }
-    }
 
     public string MonitorId => _monitor.Id;
 
@@ -120,26 +90,20 @@ public sealed class LyricsOverlayWindow : Window
         var bitmap = _bitmap;
         if (bitmap == null) return true;
         var lyrics = model.Lyrics;
-        var visible = lyrics != null && !lyrics.IsEmpty && state.DisplayMode.LyricsOn();
         var playing = state.IsPlaying;
-        if (!visible)
+        // Lyrics exist only while verified music plays: fade out on pause, then leave the desktop clean.
+        var wanted = lyrics != null && !lyrics.IsEmpty && state.DisplayMode.LyricsOn() && playing;
+        if (!wanted && _alpha < 0.01)
         {
             _alpha = 0;
-            // On-screen diagnostics: proves the overlay renders and says why no lyrics are showing.
-            var status = state.DisplayMode.LyricsOn() ? DebugStatus(state, model) : null;
-            if (status != null)
-            {
-                if (status != _drawnStatus) { DrawStatus(bitmap, status); _drawnStatus = status; _cleared = false; }
-            }
-            else if (!_cleared || _drawnStatus != null) { Clear(bitmap); _cleared = true; _drawnStatus = null; }
+            if (!_cleared) { Clear(bitmap); _cleared = true; }
             return false;
         }
-        _drawnStatus = null;
-        // One dimmed frame while paused is enough; while playing, cap at 60 fps.
-        if (now - _lastFrame < MinFrameInterval && playing) return true;
+        if (now - _lastFrame < MinFrameInterval) return true;
         _lastFrame = now;
         _cleared = false;
-        _alpha += ((playing ? 1.0 : 0.55) - _alpha) * 0.25;
+        _alpha += ((wanted ? 1.0 : 0.0) - _alpha) * 0.25;
+        if (lyrics == null) { _alpha = 0; return false; }
 
         bitmap.Lock();
         try
@@ -153,7 +117,7 @@ public sealed class LyricsOverlayWindow : Window
             var theme = new LyricTheme(state.LyricFont, new Vector4((float)hl.R, (float)hl.G, (float)hl.B, 1), new Vector4((float)sec.R, (float)sec.G, (float)sec.B, 1), state.LyricTextScale);
             var input = new SceneInput
             {
-                Lyrics = lyrics!, Pos = model.Playhead(now), Theme = theme, Width = info.Width, Height = info.Height,
+                Lyrics = lyrics, Pos = model.Playhead(now), Theme = theme, Width = info.Width, Height = info.Height,
                 Bass = bass, Vocal = vocal, Velocity = Math.Clamp(vocal * 1.2, 0, 1), Time = now, FocusY = state.LyricVerticalPosition,
             };
             var scene = _director.Advance(input, state.LyricStyle);
@@ -162,7 +126,7 @@ public sealed class LyricsOverlayWindow : Window
             bitmap.AddDirtyRect(new Int32Rect(0, 0, bitmap.PixelWidth, bitmap.PixelHeight));
         }
         finally { bitmap.Unlock(); }
-        return playing;
+        return true;
     }
 
     private static void Clear(WriteableBitmap bitmap)

@@ -78,7 +78,7 @@ public sealed class GlowRenderer
 
         var style = state.AnimationStyle;
         var playing = state.IsPlaying;
-        var targetPresence = playing ? 1.0 : (state.IdleWhenPaused ? 0.55 : 0.0);
+        var targetPresence = playing ? 1.0 : 0.0;
         _presence += (targetPresence - _presence) * Approach(2.5);
 
         // Liquid crossfade toward the current album colors.
@@ -174,7 +174,7 @@ public sealed class GlowRenderer
             }
             canvas.Restore();
 
-            DrawSparks(canvas, opacity);
+            DrawSparks(canvas, width, height, opacity);
         }
 
         foreach (var d in _frame) d.Dispose();
@@ -188,12 +188,48 @@ public sealed class GlowRenderer
     private static SKColor Col(RgbColor c, double alpha = 1) =>
         new(RgbColor.ToByte(c.R), RgbColor.ToByte(c.G), RgbColor.ToByte(c.B), A(alpha));
 
-    private SKImageFilter Blur(double sigma)
+    // ---- Downscaled soft layers ----
+
+    /// <summary>Soft layers are blurred on a surface this fraction of the screen's pixel size, then scaled up with linear filtering.</summary>
+    private const float SoftScale = 0.25f;
+    private SKSurface? _soft;
+    private int _softW, _softH;
+
+    /// <summary>
+    /// Draws <paramref name="draw"/> blurred by <paramref name="sigma"/> (in points) at quarter resolution: the blur runs
+    /// over 1/16 of the pixels, and the result is composited back with linear filtering using <paramref name="composite"/>
+    /// (blend mode, alpha, color filter). Replaces a full-resolution image-filter blur.
+    /// </summary>
+    private void DrawSoft(SKCanvas canvas, float w, float h, double sigma, Action<SKCanvas> draw, SKPaint? composite = null)
     {
-        var s = (float)Math.Max(sigma, 0.01);
-        var filter = SKImageFilter.CreateBlur(s, s);
-        _frame.Add(filter);
-        return filter;
+        var device = Math.Max(Math.Abs(canvas.TotalMatrix.ScaleX), 0.5f);
+        var sw = Math.Max(8, (int)Math.Ceiling(w * device * SoftScale));
+        var sh = Math.Max(8, (int)Math.Ceiling(h * device * SoftScale));
+        if (_soft == null || _softW != sw || _softH != sh)
+        {
+            _soft?.Dispose();
+            _soft = SKSurface.Create(new SKImageInfo(sw, sh, SKColorType.Bgra8888, SKAlphaType.Premul));
+            _softW = sw; _softH = sh;
+        }
+        if (_soft == null) { draw(canvas); return; }
+        var off = _soft.Canvas;
+        off.Clear(SKColors.Transparent);
+        off.Save();
+        off.Scale(sw / w, sh / h);                         // blur sigma is in local units, so it scales with the canvas
+        using (var blur = SKImageFilter.CreateBlur((float)Math.Max(sigma, 0.01), (float)Math.Max(sigma, 0.01)))
+        using (var layer = new SKPaint { ImageFilter = blur })
+        {
+            off.SaveLayer(layer);
+            draw(off);
+            off.Restore();
+        }
+        off.Restore();
+        off.Flush();
+        using var image = _soft.Snapshot();
+        using var fallback = composite == null ? new SKPaint() : null;
+        var paint = composite ?? fallback!;
+        paint.FilterQuality = SKFilterQuality.Medium;
+        canvas.DrawImage(image, new SKRect(0, 0, w, h), paint);
     }
 
     private SKPaint StrokePaint(double width, SKColor color, SKStrokeCap cap = SKStrokeCap.Butt) => new()
@@ -230,8 +266,7 @@ public sealed class GlowRenderer
         using (var ambient = StrokePaint(state.Thickness * (0.75 + 0.55 * beat), new SKColor(255, 255, 255, A(opacity))))
         {
             ambient.Shader = shader;
-            ambient.ImageFilter = Blur(state.GlowSpread * bloom);
-            canvas.DrawPath(ambientPath, ambient);
+            DrawSoft(canvas, w, h, state.GlowSpread * bloom, c => c.DrawPath(ambientPath, ambient));
         }
 
         // Layer 2: crisp neon core pressed right against the bezel.
@@ -240,11 +275,10 @@ public sealed class GlowRenderer
         using (var rim = StrokePaint(rimWidth, new SKColor(255, 255, 255, A(Math.Min(1, opacity * (0.85 + 0.3 * beat)) * (1 - 0.45 * aberration)))))
         {
             rim.Shader = shader;
-            rim.ImageFilter = Blur(8);
-            canvas.DrawPath(rimPath, rim);
+            DrawSoft(canvas, w, h, 8, c => c.DrawPath(rimPath, rim));
         }
 
-        DrawChromaticSplit(canvas, rimWidth * 0.25, aberration, opacity, (layer, inset) =>
+        DrawChromaticSplit(canvas, w, h, rimWidth * 0.25, aberration, opacity, (layer, inset) =>
         {
             using var path = EdgePath(w, h, inset);
             using var paint = StrokePaint(rimWidth * 0.8, SKColors.White);
@@ -284,42 +318,36 @@ public sealed class GlowRenderer
 
         using (var ambientPath = EdgePath(w, h, 0))
         using (var layerPaint = new SKPaint { Color = new SKColor(255, 255, 255, A(opacity * (0.7 + 0.3 * Math.Min(beat, 1)))) })
-        {
-            layerPaint.ImageFilter = Blur(state.GlowSpread * (0.8 + 0.45 * beat));
-            canvas.SaveLayer(layerPaint);
-            StrokeComets(canvas, comets, ambientPath, length, state.Thickness * (0.85 + 0.55 * beat));
-            canvas.Restore();
-        }
+            DrawSoft(canvas, w, h, state.GlowSpread * (0.8 + 0.45 * beat),
+                     c => StrokeComets(c, comets, ambientPath, length, state.Thickness * (0.85 + 0.55 * beat)), layerPaint);
 
         var rimWidth = Math.Max(4, state.Thickness * 0.22) * (1 + 0.25 * beat);
         using var rimPath = EdgePath(w, h, rimWidth * 0.25);
         using (var layerPaint = new SKPaint { Color = new SKColor(255, 255, 255, A(Math.Min(1, opacity * (0.75 + 0.4 * beat)) * (1 - 0.45 * aberration))) })
-        {
-            layerPaint.ImageFilter = Blur(8 * (1 + 0.5 * beat));
-            canvas.SaveLayer(layerPaint);
-            StrokeComets(canvas, comets, rimPath, length, rimWidth);
-            canvas.Restore();
-        }
+            DrawSoft(canvas, w, h, 8 * (1 + 0.5 * beat), c => StrokeComets(c, comets, rimPath, length, rimWidth), layerPaint);
 
         // White-hot point at each head.
         using (var core = StrokePaint(rimWidth * 0.7, Col(CometHeadColor.Lerp(RgbColor.White, 0.4), opacity * (0.75 + 0.25 * Math.Min(beat, 1))), SKStrokeCap.Round))
         {
             core.BlendMode = SKBlendMode.Plus;
-            core.ImageFilter = Blur(4 + 2 * beat);
             var coreReach = Math.Min(0.008, length * 0.2);
             using var measure = new SKPathMeasure(rimPath, false);
             using var segment = new SKPath();
-            foreach (var comet in comets)
+            using var plus = new SKPaint { BlendMode = SKBlendMode.Plus };
+            DrawSoft(canvas, w, h, 4 + 2 * beat, c =>
             {
-                var range = CometRange(comet, coreReach);
-                if (range == null) continue;
-                segment.Rewind();
-                AddSegment(measure, range.Value.From, range.Value.To, segment);
-                canvas.DrawPath(segment, core);
-            }
+                foreach (var comet in comets)
+                {
+                    var range = CometRange(comet, coreReach);
+                    if (range == null) continue;
+                    segment.Rewind();
+                    AddSegment(measure, range.Value.From, range.Value.To, segment);
+                    c.DrawPath(segment, core);
+                }
+            }, plus);
         }
 
-        DrawChromaticSplit(canvas, rimWidth * 0.25, aberration, opacity, (layer, inset) =>
+        DrawChromaticSplit(canvas, w, h, rimWidth * 0.25, aberration, opacity, (layer, inset) =>
         {
             using var path = EdgePath(w, h, inset);
             StrokeComets(layer, comets, path, length, rimWidth * 0.8);
@@ -421,17 +449,19 @@ public sealed class GlowRenderer
         using var measure = new SKPathMeasure(path, false);
         using var segment = new SKPath();
         var reach = 0.01 + 0.008 * Math.Min(beat, 1.5);
-        var blur = Blur(state.GlowSpread * (0.5 + 0.3 * beat));
-        foreach (var bloom in blooms)
+        using var plus = new SKPaint { BlendMode = SKBlendMode.Plus };
+        DrawSoft(canvas, w, h, state.GlowSpread * (0.5 + 0.3 * beat), c =>
         {
-            using var paint = StrokePaint(state.Thickness * (1 + 0.6 * beat), Col(CometHeadColor, opacity * bloom.Glow), SKStrokeCap.Round);
-            paint.BlendMode = SKBlendMode.Plus;
-            paint.ImageFilter = blur;
-            segment.Rewind();
-            // AddSegment wraps, so a bloom at top-center (0) spans both sides of the path's start.
-            AddSegment(measure, bloom.Point - reach, bloom.Point + reach, segment);
-            canvas.DrawPath(segment, paint);
-        }
+            foreach (var bloom in blooms)
+            {
+                using var paint = StrokePaint(state.Thickness * (1 + 0.6 * beat), Col(CometHeadColor, opacity * bloom.Glow), SKStrokeCap.Round);
+                paint.BlendMode = SKBlendMode.Plus;
+                segment.Rewind();
+                // AddSegment wraps, so a bloom at top-center (0) spans both sides of the path's start.
+                AddSegment(measure, bloom.Point - reach, bloom.Point + reach, segment);
+                c.DrawPath(segment, paint);
+            }
+        }, plus);
     }
 
     // ---- Chromatic impact ----
@@ -441,7 +471,7 @@ public sealed class GlowRenderer
     /// inward, each keeping the rim's own alpha. Driven straight off the bass envelope, so it snaps back as
     /// the hit decays.
     /// </summary>
-    private void DrawChromaticSplit(SKCanvas canvas, double inset, double amount, double opacity, Action<SKCanvas, double> stroke)
+    private void DrawChromaticSplit(SKCanvas canvas, float w, float h, double inset, double amount, double opacity, Action<SKCanvas, double> stroke)
     {
         if (amount <= 0.01) return;
         var shift = 3 + 7 * amount;
@@ -459,10 +489,7 @@ public sealed class GlowRenderer
                 Color = new SKColor(255, 255, 255, A(Math.Min(1, opacity * amount * 1.1))),
                 ColorFilter = tint,
             };
-            layerPaint.ImageFilter = Blur(2.5);
-            canvas.SaveLayer(layerPaint);
-            stroke(canvas, channel.Inset);
-            canvas.Restore();
+            DrawSoft(canvas, w, h, 2.5, c => stroke(c, channel.Inset), layerPaint);
         }
     }
 
@@ -669,7 +696,7 @@ public sealed class GlowRenderer
     private static double SparkAlpha(in Spark s) => Math.Pow(Math.Max(1 - s.Age / s.Life, 0), 1.5);
 
     /// <summary>Sparks as a constellation: faint links between nearby sparks, soft glowing halos, bright cores.</summary>
-    private void DrawSparks(SKCanvas canvas, double opacity)
+    private void DrawSparks(SKCanvas canvas, float w, float h, double opacity)
     {
         if (_sparks.Count == 0) return;
 
@@ -697,17 +724,17 @@ public sealed class GlowRenderer
         // One blurred layer for all halos instead of a blur per spark.
         using (var layerPaint = new SKPaint { BlendMode = SKBlendMode.Plus })
         {
-            layerPaint.ImageFilter = Blur(6);
-            canvas.SaveLayer(layerPaint);
-            using var fill = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill };
-            foreach (var spark in _sparks)
+            DrawSoft(canvas, w, h, 6, c =>
             {
-                var alpha = SparkAlpha(spark);
-                var radius = spark.Size * 3.2 * (0.6 + 0.4 * alpha);
-                fill.Color = Col(spark.Color, alpha * 0.85 * opacity);
-                canvas.DrawCircle((float)spark.X, (float)spark.Y, (float)radius, fill);
-            }
-            canvas.Restore();
+                using var fill = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill };
+                foreach (var spark in _sparks)
+                {
+                    var alpha = SparkAlpha(spark);
+                    var radius = spark.Size * 3.2 * (0.6 + 0.4 * alpha);
+                    fill.Color = Col(spark.Color, alpha * 0.85 * opacity);
+                    c.DrawCircle((float)spark.X, (float)spark.Y, (float)radius, fill);
+                }
+            }, layerPaint);
         }
 
         using (var cores = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill, BlendMode = SKBlendMode.Plus })

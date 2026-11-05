@@ -158,7 +158,6 @@ final class LyricsModel: ObservableObject {
         case .spotify: return "com.spotify.client"
         case .appleMusic: return "com.apple.Music"
         case .youTubeMusic: return "com.google.Chrome"   // browser tab: LRCLIB must confirm it is a song
-        case .systemAudio: return nil
         }
     }
 

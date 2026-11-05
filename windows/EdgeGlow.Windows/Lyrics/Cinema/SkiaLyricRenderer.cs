@@ -26,6 +26,8 @@ public sealed class SkiaLyricRenderer : IDisposable
     {
         _lensSurface?.Dispose();
         foreach (var image in _emojiImages.Values) image.Dispose();
+        foreach (var entry in _wordCache.Values) entry.Image?.Dispose();
+        foreach (var image in _profiles.Values) image.Dispose();
     }
 
     // ---------------------------------------------------------------- Entry
@@ -34,6 +36,8 @@ public sealed class SkiaLyricRenderer : IDisposable
                        LensParams? lens, Vector3 highlight, float alpha = 1)
     {
         _font = font;
+        _frameNumber++;
+        TrimWordCache();
         var cy = h * (0.5f + (float)(focusY - 0.5) * 0.5f);
         if (lens is not { } lp)
         {
@@ -183,25 +187,107 @@ public sealed class SkiaLyricRenderer : IDisposable
         var bounds = canvas.DeviceClipBounds;
         if (p.All(q => q.X < bounds.Left - 200) || p.All(q => q.X > bounds.Right + 200) || p.All(q => q.Y < bounds.Top - 200) || p.All(q => q.Y > bounds.Bottom + 200)) return;
 
+        // Fast path: the word (with its crisp outline or offset shadow) is rasterized once into a cached alpha mask and
+        // only tinted and warped per frame. Depth-of-field softness is approximated by fading, not blurring.
+        var tint = Rgba(color);
+        if (item.Style == TextStyle.Fill && item.Blur > 0.02f) tint = Rgba(color, Math.Max(0.35f, 1f - 0.25f * item.Blur) * color.W);
+        if (WordMask(item, run, pxPerUnit, ss) is { } word)
+        {
+            canvas.Save();
+            canvas.SetMatrix(SKMatrix.Concat(total, SKMatrix.CreateScale(1f / word.Scale, 1f / word.Scale)));
+            using var tinted = new SKPaint { IsAntialias = true, FilterQuality = SKFilterQuality.Medium, Color = tint };
+            canvas.DrawImage(word.Image, -word.Pad, -word.Pad, tinted);
+            canvas.Restore();
+            return;
+        }
+
         canvas.Save();
         canvas.SetMatrix(total);
-        using var paint = new SKPaint { IsAntialias = true, Color = Rgba(color) };
+        using var paint = new SKPaint { IsAntialias = true, Color = tint };
         switch (item.Style)
         {
             case TextStyle.Outline:
-                paint.Style = SKPaintStyle.Stroke; paint.StrokeWidth = 3f * ss / pxPerUnit; paint.StrokeJoin = SKStrokeJoin.Round;
+                paint.Style = SKPaintStyle.Stroke; paint.StrokeWidth = OutlinePx * ss / pxPerUnit; paint.StrokeJoin = SKStrokeJoin.Round;
                 break;
             case TextStyle.Shadow:
-                // Hard-edged offset copy instead of a real-time blur (a CPU blur per word dominated frame time).
-                canvas.Translate(Math.Clamp(item.ShadowPx * 0.2f, 2f, 3f) * ss / pxPerUnit, Math.Clamp(item.ShadowPx * 0.2f, 2f, 3f) * ss / pxPerUnit);
-                break;
-            default:
-                // Depth-of-field softness is approximated by fading, not blurring.
-                if (item.Blur > 0.02f) paint.Color = Rgba(color, Math.Max(0.35f, 1f - 0.25f * item.Blur) * color.W);
+                var d = ShadowOffset(item) * ss / pxPerUnit;
+                canvas.Translate(d, d);
                 break;
         }
         canvas.DrawText(run.Blob, 0, -run.Ascent, paint);
         canvas.Restore();
+    }
+
+    // ---------------------------------------------------------------- Word cache
+
+    private const float OutlinePx = 3f;     // crisp dark stroke: 1.5 px on each side of the glyph edge
+    private const int MaxCachedWords = 700;
+    private const int MaxMaskSide = 1536;
+
+    private readonly record struct WordKey(string Text, LyricFont Font, bool Mono, TextStyle Style, int Bucket, int Offset);
+    private sealed class WordEntry { public SKImage? Image; public float Scale; public float Pad; public long LastUsed; }
+    private readonly record struct MaskRef(SKImage Image, float Scale, float Pad);
+    private readonly Dictionary<WordKey, WordEntry> _wordCache = new();
+    private long _frameNumber;
+
+    private static float ShadowOffset(in DrawItem item) => MathF.Round(Math.Clamp(item.ShadowPx * 0.2f, 2f, 3f) * 2f) / 2f;
+
+    /// <summary>
+    /// Alpha mask of one word in one style, rasterized once per (word, font, style, size bucket) and then reused for every
+    /// frame. The bucket's raster scale is at or above the on-screen scale, so the mask stays crisp and is only ever
+    /// minified. Returns null when the word is too large to cache (it is drawn as vectors instead).
+    /// </summary>
+    private MaskRef? WordMask(in DrawItem item, TextRun run, float pxPerUnit, float ss)
+    {
+        var bucket = (int)Math.Ceiling(Math.Log(Math.Max(pxPerUnit, 0.05f)) / Math.Log(1.25));
+        var scale = MathF.Pow(1.25f, bucket);
+        var offset = item.Style == TextStyle.Shadow ? (int)(ShadowOffset(item) * 2) : 0;
+        var key = new WordKey(item.Text!, _font, item.Mono, item.Style, bucket, offset);
+        if (_wordCache.TryGetValue(key, out var hit))
+        {
+            hit.LastUsed = _frameNumber;
+            return hit.Image is null ? null : new MaskRef(hit.Image, hit.Scale, hit.Pad);
+        }
+
+        var strokePx = OutlinePx * ss;
+        var shadowPx = ShadowOffset(item) * ss;
+        var pad = MathF.Ceiling(item.Style == TextStyle.Outline ? strokePx * 0.5f + 2 : item.Style == TextStyle.Shadow ? shadowPx + 2 : 2);
+        var wPx = (int)Math.Ceiling(run.Width * scale + pad * 2);
+        var hPx = (int)Math.Ceiling(run.Height * scale + pad * 2);
+        var entry = new WordEntry { Scale = scale, Pad = pad, LastUsed = _frameNumber };
+        if (wPx <= MaxMaskSide && hPx <= MaxMaskSide)
+        {
+            using var surface = SKSurface.Create(new SKImageInfo(wPx, hPx, SKColorType.Alpha8, SKAlphaType.Premul));
+            if (surface != null)
+            {
+                var c = surface.Canvas;
+                c.Clear(SKColors.Transparent);
+                using var paint = new SKPaint { IsAntialias = true, Color = SKColors.White };
+                var shift = item.Style == TextStyle.Shadow ? shadowPx : 0;
+                c.Translate(pad + shift, pad + shift);
+                c.Scale(scale);
+                if (item.Style == TextStyle.Outline)
+                {
+                    paint.Style = SKPaintStyle.Stroke; paint.StrokeWidth = strokePx / scale; paint.StrokeJoin = SKStrokeJoin.Round;
+                }
+                c.DrawText(run.Blob!, 0, -run.Ascent, paint);
+                c.Flush();
+                entry.Image = surface.Snapshot();
+            }
+        }
+        _wordCache[key] = entry;
+        return entry.Image is null ? null : new MaskRef(entry.Image, scale, pad);
+    }
+
+    /// <summary>Drops masks not used for two seconds once the cache is large; resets it outright if it still overflows.</summary>
+    private void TrimWordCache()
+    {
+        if (_wordCache.Count <= MaxCachedWords) return;
+        var stale = _wordCache.Where(kv => _frameNumber - kv.Value.LastUsed > 120).Select(kv => kv.Key).ToList();
+        foreach (var k in stale) { _wordCache[k].Image?.Dispose(); _wordCache.Remove(k); }
+        if (_wordCache.Count <= MaxCachedWords * 3 / 2) return;
+        foreach (var e in _wordCache.Values) e.Image?.Dispose();
+        _wordCache.Clear();
     }
 
     private void DrawRibbon(SKCanvas canvas, in DrawItem item, Vector4 color, in CameraFrame cam, Vector2 center, float ss)
@@ -232,6 +318,36 @@ public sealed class SkiaLyricRenderer : IDisposable
         return SKShader.CreateRadialGradient(new SKPoint(cx, cy), Math.Max(r, 0.5f), colors, pos, SKShaderTileMode.Clamp);
     }
 
+    private const int ProfileSide = 96;
+    private readonly Dictionary<(bool Plume, int Exp), SKImage> _profiles = new();
+
+    /// <summary>
+    /// Radial alpha falloff of a soft sprite as a small 96x96 mask, built once. Large plumes and halos are then a single
+    /// bilinear-upscaled textured quad instead of a per-pixel gradient shader over thousands of pixels.
+    /// </summary>
+    private SKImage Profile(bool plume, float exponent)
+    {
+        var q = (int)Math.Round(exponent * 2);
+        if (_profiles.TryGetValue((plume, q), out var hit)) return hit;
+        var e = q / 2f;
+        using var bitmap = new SKBitmap(new SKImageInfo(ProfileSide, ProfileSide, SKColorType.Alpha8, SKAlphaType.Premul));
+        var data = new byte[ProfileSide * ProfileSide];
+        var half = ProfileSide / 2f;
+        for (var y = 0; y < ProfileSide; y++)
+            for (var x = 0; x < ProfileSide; x++)
+            {
+                var dx = (x + 0.5f) / half - 1; var dy = (y + 0.5f) / half - 1;
+                var t = MathF.Sqrt(dx * dx + dy * dy);
+                float v;
+                if (t >= 1) v = 0;
+                else if (plume) { var k = Math.Clamp((t - 0.30f) / 0.70f, 0f, 1f); k = k * k * (3 - 2 * k); v = 1 - k; }
+                else v = MathF.Pow(1 - t, e);
+                data[y * ProfileSide + x] = (byte)Math.Clamp(v * 255f + 0.5f, 0, 255);
+            }
+        System.Runtime.InteropServices.Marshal.Copy(data, 0, bitmap.GetPixels(), data.Length);
+        return _profiles[(plume, q)] = SKImage.FromBitmap(bitmap);
+    }
+
     private void DrawSprite(SKCanvas canvas, in DrawItem item, Vector4 color, in CameraFrame cam, Vector2 center, float ss)
     {
         if (!Project(item.C0, cam, center, ss, out var p, out var z)) return;
@@ -243,10 +359,10 @@ public sealed class SkiaLyricRenderer : IDisposable
         {
             case DrawKind.Glow:
             {
-                var e = Math.Max(item.Extra, 1.6f);
-                paint.Shader = RadialFalloff(p.X, p.Y, r, color, t => MathF.Pow(1 - t, e) * color.W / Math.Max(color.W, 0.0001f));
-                paint.Color = SKColors.White;
-                canvas.DrawCircle(p, r, paint);
+                // A cached low-resolution falloff mask, tinted and scaled up with linear filtering.
+                paint.FilterQuality = SKFilterQuality.Medium;
+                paint.Color = Rgba(color);
+                canvas.DrawImage(Profile(false, Math.Max(item.Extra, 1.6f)), new SKRect(p.X - r, p.Y - r, p.X + r, p.Y + r), paint);
                 break;
             }
             case DrawKind.Plume:
@@ -256,12 +372,9 @@ public sealed class SkiaLyricRenderer : IDisposable
                 var aspect = item.Stretch > 0.01f ? item.Stretch : 1f;
                 canvas.Save();
                 canvas.Translate(p.X, p.Y); canvas.Scale(aspect, 1); canvas.Translate(-p.X, -p.Y);
-                paint.Shader = RadialFalloff(p.X, p.Y, r, new Vector4(color.X, color.Y, color.Z, 1), t =>
-                {
-                    var s = Math.Clamp((t - 0.30f) / 0.70f, 0f, 1f); s = s * s * (3 - 2 * s);
-                    return strength * color.W * (1 - s);
-                });
-                canvas.DrawCircle(p, r, paint);
+                paint.FilterQuality = SKFilterQuality.Medium;
+                paint.Color = Rgba(new Vector4(color.X, color.Y, color.Z, 1), Math.Clamp(strength * color.W, 0, 1));
+                canvas.DrawImage(Profile(true, 0), new SKRect(p.X - r, p.Y - r, p.X + r, p.Y + r), paint);
                 canvas.Restore();
                 break;
             }
