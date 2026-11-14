@@ -224,3 +224,10 @@ platforms on GitHub Actions and attaches `EdgeGlow-Windows-x64.zip` and `EdgeGlo
   while nothing is playing. Turn it off to fade the overlay out when music stops.
 - **No microphone, and no screen pixels are analyzed.** Screen & System Audio Recording permission
   is needed only because ScreenCaptureKit is macOS's API for system audio.
+
+## License
+
+EdgeGlow is free for personal and non-commercial use under the
+[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0).
+You may use and modify it for yourself, but commercial use, reselling, or rebranding
+without permission is prohibited. See [LICENSE](LICENSE).

@@ -77,3 +77,4 @@ windows/**/bin/
 windows/**/obj/
 .vs/
 *.user
+*.zip
