@@ -106,7 +106,7 @@ struct TrackInfo: Equatable, Sendable {
 
 // MARK: - Visual
 
-enum WordVisual: Equatable, Hashable, Sendable {
+enum WordVisual: Codable, Equatable, Hashable, Sendable {
     case symbol(String)
     case emoji(String)
 }

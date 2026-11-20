@@ -19,9 +19,14 @@ enum AudioCaptureStatus: Equatable {
 /// Latest band energies (0…1). Written ~50–120×/s off the main thread and read by the renderer every
 /// frame, so it is lock-protected instead of @Published (which would re-render SwiftUI at audio rate).
 final class AudioLevels: @unchecked Sendable {
+    /// Bands in the live spectrum (log-spaced, 30 Hz…16 kHz), read by the Orbital lyric style.
+    static let spectrumBands = 48
+
     private let lock = NSLock()
     private var bass = 0.0
     private var vocal = 0.0
+    private var spectrumValues = [Float](repeating: 0, count: AudioLevels.spectrumBands)
+    private var spectrumTime: CFTimeInterval = 0
 
     func snapshot() -> (bass: Double, vocal: Double) {
         lock.lock()
@@ -33,6 +38,20 @@ final class AudioLevels: @unchecked Sendable {
         lock.lock()
         self.bass = bass
         self.vocal = vocal
+        lock.unlock()
+    }
+
+    /// Latest auto-gained spectrum (0…1 per band) and when it was written (`CACurrentMediaTime`, 0 = never).
+    func spectrum() -> (bands: [Float], time: CFTimeInterval) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (spectrumValues, spectrumTime)
+    }
+
+    func updateSpectrum(_ bands: [Float], time: CFTimeInterval) {
+        lock.lock()
+        spectrumValues = bands
+        spectrumTime = time
         lock.unlock()
     }
 }
@@ -93,6 +112,10 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
     private var vocalEnvelope = 0.0
     private var bassPeak = RollingPeak()
     private var vocalPeak = RollingPeak()
+    /// Orbital spectrum: per-band rolling peaks and the FFT bin range of every band (rebuilt with the FFT).
+    private var spectrumPeaks = [RollingPeak](repeating: RollingPeak(), count: AudioLevels.spectrumBands)
+    private var spectrumBins: [ClosedRange<Int>] = []
+    private var spectrumScratch = [Float](repeating: 0, count: AudioLevels.spectrumBands)
     private var vocalSlow = 0.0
     private var lastVocalOnset: CFTimeInterval = 0
     private var captureRunning = false
@@ -520,6 +543,48 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         imagp = [Float](repeating: 0, count: fftSize / 2)
         power = [Float](repeating: 0, count: fftSize / 2)
         ring.removeAll(keepingCapacity: true)
+        spectrumBins = []
+    }
+
+    /// FFT bin ranges for the log-spaced spectrum bands, 30 Hz…16 kHz. Low bands narrower than one bin
+    /// share it, so every band has at least one bin.
+    private func makeSpectrumBins() -> [ClosedRange<Int>] {
+        let half = fftSize / 2
+        let binHz = sampleRate / Double(fftSize)
+        let lo = 30.0, hi = min(16_000.0, sampleRate * 0.48)
+        let n = AudioLevels.spectrumBands
+        return (0..<n).map { i in
+            let f0 = lo * pow(hi / lo, Double(i) / Double(n))
+            let f1 = lo * pow(hi / lo, Double(i + 1) / Double(n))
+            let b0 = min(half - 1, max(1, Int(f0 / binHz)))
+            let b1 = min(half - 1, max(b0, Int((f1 / binHz).rounded(.down))))
+            return b0...b1
+        }
+    }
+
+    /// Per-band auto-gained spectrum for the Orbital equalizer. Each band is divided by its own rolling
+    /// peak (so highs move as much as bass), blended with a shared reference so quiet bands stay quiet.
+    private func publishSpectrum(dt: Double, now: CFTimeInterval) {
+        if spectrumBins.isEmpty { spectrumBins = makeSpectrumBins() }
+        var loudest = 0.0
+        var amps = [Double](repeating: 0, count: spectrumBins.count)
+        power.withUnsafeBufferPointer { p in
+            for (i, bins) in spectrumBins.enumerated() {
+                var sum: Float = 0
+                vDSP_sve(p.baseAddress! + bins.lowerBound, 1, &sum, vDSP_Length(bins.count))
+                // RMS-per-bin amplitude, so wide high bands don't read louder just for holding more bins.
+                let a = sqrt(Double(sum) / Double(bins.count)) * 2 / Double(fftSize)
+                amps[i] = a
+                loudest = max(loudest, a)
+            }
+        }
+        for i in amps.indices {
+            let own = Self.autoGain(amps[i], peak: &spectrumPeaks[i], dt: dt)
+            let shared = loudest > 0 ? min(1, amps[i] / max(loudest, Self.noiseFloor)) : 0
+            // Spikes are punchier with a slight power curve; quiet passages ripple instead of filling the ring.
+            spectrumScratch[i] = Float(pow(own * 0.7 + shared.squareRoot() * 0.3, 1.35))
+        }
+        state.audioLevels.updateSpectrum(spectrumScratch, time: now)
     }
 
     private func analyze(_ mono: [Float], sampleRate rate: Double) {
@@ -575,6 +640,8 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         if levelSource != .cloudSync {
             state.audioLevels.update(bass: bassEnvelope, vocal: vocalEnvelope)
         }
+        // Only the live FFT has a real spectrum; under Cloud Sync the Orbital ring falls back to its own wave.
+        if levelSource == .live { publishSpectrum(dt: dt, now: now) }
     }
 
     /// A sudden rise of 300 Hz–3.4 kHz energy above its own recent average marks a vocal (or other
@@ -636,6 +703,8 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         vocalEnvelope = 0
         bassPeak.reset()
         vocalPeak.reset()
+        for i in spectrumPeaks.indices { spectrumPeaks[i].reset() }
+        state.audioLevels.updateSpectrum([Float](repeating: 0, count: AudioLevels.spectrumBands), time: 0)
         vocalSlow = 0
         setAudioPresent(false)
         updateLevelSource(now: CACurrentMediaTime())

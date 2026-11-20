@@ -2,14 +2,13 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// Owns one click-through full-canvas lyrics panel per enabled display while the mode includes lyrics. Switching to
-/// `Glow Only` or `Off` destroys the panels (and with them their render loops and Metal/SpriteKit
-/// resources); switching back rebuilds them.
+/// Owns one click-through full-canvas lyrics panel per enabled display while the mode includes lyrics. Each panel
+/// hosts a SwiftUI `LyricStage`. Switching to `Glow Only` or `Off` destroys the panels (and with them their
+/// render loops); switching back rebuilds them.
 @MainActor
 final class LyricsOverlayManager {
     private let state: AppState
     private let model: LyricsModel
-    private lazy var director: LyricsDirector? = LyricsDirector()
     private var panels: [String: OverlayPanel] = [:]
     private var cancellables = Set<AnyCancellable>()
 
@@ -59,7 +58,11 @@ final class LyricsOverlayManager {
     private func makePanel(for screen: NSScreen) -> OverlayPanel {
         let panel = OverlayPanel(covering: screen)
         let frame = canvasFrame(on: screen)
-        panel.contentView = LyricsMetalView(model: model, state: state, director: director)
+        let host = NSHostingView(rootView: LyricStage(model: model, state: state, art: model.art))
+        host.sizingOptions = []
+        host.wantsLayer = true
+        host.layer?.backgroundColor = NSColor.clear.cgColor
+        panel.contentView = host
         panel.setFrame(frame, display: false)
         panel.orderFrontRegardless()
         return panel
@@ -74,7 +77,7 @@ final class LyricsOverlayManager {
     private func destroy(_ id: String) {
         guard let panel = panels.removeValue(forKey: id) else { return }
         panel.orderOut(nil)
-        // Drop the hierarchy now so its TimelineView and any Metal/SpriteKit views stop immediately.
+        // Drop the hierarchy now so its TimelineView stops immediately.
         panel.contentView = nil
         panel.close()
     }

@@ -31,8 +31,11 @@ final class OverlayWindowManager {
         // @Published emits on willSet, so use the delivered value rather than re-reading the property.
         // The rim exists only while the mode includes it; Lyrics Only and Off tear the panels (and their
         // render loops) down.
-        Publishers.CombineLatest(state.$activeDisplays, state.$displayMode)
-            .map { displays, mode in mode.glowOn ? displays : [] }
+        // Orbital can also be set to replace the rim with its own ring.
+        Publishers.CombineLatest4(state.$activeDisplays, state.$displayMode, state.$lyricStyle, state.$orbitalReplacesGlow)
+            .map { displays, mode, style, replace in
+                AppState.glowRimEnabled(mode: mode, style: style, orbitalReplacesGlow: replace) ? displays : []
+            }
             .dropFirst()
             .removeDuplicates()
             .sink { [weak self] active in
@@ -53,7 +56,7 @@ final class OverlayWindowManager {
         sync(active: glowDisplays)
     }
 
-    private var glowDisplays: Set<String> { state.displayMode.glowOn ? state.activeDisplays : [] }
+    private var glowDisplays: Set<String> { state.glowRimEnabled ? state.activeDisplays : [] }
 
     @objc private func screenParametersChanged(_ notification: Notification) {
         refreshDisplayList()

@@ -7,7 +7,9 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "EdgeGlow",
-            path: "Sources/EdgeGlow"
+            path: "Sources/EdgeGlow",
+            // Compiled into Contents/Resources/default.metallib by build.sh.
+            exclude: ["Lyrics/Shaders/Shaders.metal"]
         )
     ],
     swiftLanguageVersions: [.v5]

@@ -3,7 +3,9 @@ import AppKit
 import NaturalLanguage
 
 /// Resolves a lyric word to an SF Symbol or emoji.
-///  Layer 1: curated dictionary · Layer 2: Apple CoreGlyphs index · Layer 3: NLEmbedding nearest anchor
+///  Layer 0: direct overrides · Layer 1: curated dictionary · Layer 2: Apple's CoreGlyphs search index
+///  (`symbol_search.plist`) · Layer 3: `NLTagger` lemma, then `NLEmbedding` nearest neighbours re-resolved
+///  through layers 0–2. Resolved words persist in `~/Library/Caches/EdgeGlow/WordVisuals.json`.
 final class WordVisualResolver: @unchecked Sendable {
     static let shared = WordVisualResolver()
 
@@ -13,13 +15,13 @@ final class WordVisualResolver: @unchecked Sendable {
     private var glyphIndex: [String: String] = [:]
     private var glyphIndexReady = false
     private var embedding: NLEmbedding?
-    private var anchorWords: [(word: String, symbol: String)] = []
     private var embeddingReady = false
+    private var cacheDirty = false
     private let queue = DispatchQueue(label: "com.jplane6.EdgeLyrics.visuals", qos: .utility)
 
     private init() {
+        queue.async { [self] in loadDiskCache() }
         queue.async { [self] in loadGlyphIndex() }
-        queue.async { [self] in loadEmbedding() }
     }
 
     // MARK: Public
@@ -28,11 +30,12 @@ final class WordVisualResolver: @unchecked Sendable {
     func visual(for rawWord: String) -> WordVisual? {
         let token = Self.normalize(rawWord)
         guard token.count >= 2 else { return nil }
+        if let v = Self.overrideLookup(token), Self.exists(v) { return v }
         if let v = Self.curatedLookup(token), Self.exists(v) { return v }
         guard token.count >= 4, !Self.stopwords.contains(token) else { return nil }
         lock.lock()
         if let hit = cache[token] { lock.unlock(); return hit ?? nil }
-        let ready = glyphIndexReady && embeddingReady
+        let ready = glyphIndexReady
         let alreadyQueued = inflight.contains(token)
         if ready, !alreadyQueued { inflight.insert(token) }
         lock.unlock()
@@ -45,23 +48,33 @@ final class WordVisualResolver: @unchecked Sendable {
         return nil
     }
 
-    /// Warm the deep layers for every word in a song so frames only hit the cache.
+    /// Warm the deep layers for every word in a song so frames only hit the cache. Loads the English word
+    /// embedding on first use (only the icon styles call this).
     func prepare(_ lyrics: TimedLyrics) {
         queue.async { [self] in
-            // Wait for the indexes (they load on the same serial queue, so they are ready by now).
+            loadEmbedding()
+            // The indexes load on this same serial queue, so they are ready by now.
             for w in Set(lyrics.words.map { Self.normalize($0.text) }) where w.count >= 4 && !Self.stopwords.contains(w) {
-                if Self.curatedLookup(w) != nil { continue }
+                if Self.overrideLookup(w) != nil || Self.curatedLookup(w) != nil { continue }
                 lock.lock(); let known = cache[w] != nil; lock.unlock()
                 if known { continue }
                 let v = deepResolve(w)
-                lock.lock(); cache[w] = .some(v); lock.unlock()
+                lock.lock(); cache[w] = .some(v); cacheDirty = true; lock.unlock()
             }
+            saveDiskCache()
+        }
+    }
+
+    /// Drops the ~40 MB embedding when no icon style is selected. Resolved words stay cached.
+    func releaseDeepLayers() {
+        queue.async { [self] in
+            lock.lock(); embedding = nil; embeddingReady = false; lock.unlock()
         }
     }
 
     var diagnostics: String {
         lock.lock(); defer { lock.unlock() }
-        return "glyphIndex ready=\(glyphIndexReady) terms=\(glyphIndex.count) · embedding ready=\(embeddingReady) loaded=\(embedding != nil) anchors=\(anchorWords.count) · cached=\(cache.count)"
+        return "glyphIndex ready=\(glyphIndexReady) terms=\(glyphIndex.count) · embedding ready=\(embeddingReady) loaded=\(embedding != nil) · cached=\(cache.count)"
     }
 
     /// Describes how the deep layers see a word (used by `--self-test`).
@@ -70,10 +83,9 @@ final class WordVisualResolver: @unchecked Sendable {
         lock.lock(); let l2 = glyphIndex[token]; lock.unlock()
         var l3 = "n/a"
         if let e = embedding, e.contains(token) {
-            let ranked = anchorWords.map { ($0.word, e.distance(between: token, and: $0.word)) }.sorted { $0.1 < $1.1 }
-            l3 = ranked.prefix(2).map { "\($0.0)=\(String(format: "%.2f", $0.1))" }.joined(separator: ",")
+            l3 = e.neighbors(for: token, maximumCount: 3).map { "\($0.0)=\(String(format: "%.2f", $0.1))" }.joined(separator: ",")
         }
-        return "\(token): L2=\(l2 ?? "–") L3=\(l3)"
+        return "\(token): lemma=\(Self.lemma(token)) L2=\(l2 ?? "–") L3=\(l3)"
     }
 
     // MARK: Normalisation
@@ -102,16 +114,46 @@ final class WordVisualResolver: @unchecked Sendable {
         return ok
     }
 
-    private static func curatedLookup(_ token: String) -> WordVisual? {
-        if let v = curated[token] { return v }
+    private static func curatedLookup(_ token: String) -> WordVisual? { stemLookup(token, in: curated) }
+    private static func overrideLookup(_ token: String) -> WordVisual? { stemLookup(token, in: overrides) }
+
+    /// Exact match, then simple English suffix stripping ("driving" → "drive", "running" → "run").
+    private static func stemLookup(_ token: String, in table: [String: WordVisual]) -> WordVisual? {
+        if let v = table[token] { return v }
         for suffix in ["ing", "ed", "es", "s", "ly", "er"] where token.hasSuffix(suffix) && token.count > suffix.count + 2 {
             let stem = String(token.dropLast(suffix.count))
-            if let v = curated[stem] { return v }
-            if let v = curated[stem + "e"] { return v }
-            if stem.count > 2, stem.last == stem.dropLast().last, let v = curated[String(stem.dropLast())] { return v }
+            if let v = table[stem] { return v }
+            if let v = table[stem + "e"] { return v }
+            if stem.count > 2, stem.last == stem.dropLast().last, let v = table[String(stem.dropLast())] { return v }
         }
         return nil
     }
+
+    /// Direct overrides; checked before everything else.
+    static let overrides: [String: WordVisual] = {
+        var d: [String: WordVisual] = [:]
+        func sym(_ words: String, _ s: String) { for w in words.split(separator: " ") { d[String(w)] = .symbol(s) } }
+        sym("heart hearts", "heart.circle.fill")
+        sym("broken", "heart.slash.fill")
+        sym("world", "globe.americas.fill")
+        sym("rain storm storms", "cloud.bolt.rain.fill")
+        sym("sun hot", "thermometer.sun.fill")
+        sym("swim swimming", "figure.pool.swim")
+        sym("money cash", "dollarsign.circle.fill")
+        sym("party", "party.popper.fill")
+        sym("star", "star.circle.fill")
+        sym("music song", "music.quarternote.3")
+        sym("walk run", "figure.walk.motion")
+        sym("light", "flashlight.on.fill")
+        sym("car drive", "engine.combustion.fill")
+        sym("fly plane", "airplane.departure")
+        sym("time clock", "clock.arrow.circlepath")
+        sym("smile", "face.smiling.fill")
+        sym("talk say", "bubble.left.fill")
+        sym("fire", "flame.fill")
+        sym("moon", "moon.stars.fill")
+        return d
+    }()
 
     private static let curated: [String: WordVisual] = {
         var d: [String: WordVisual] = [:]
@@ -339,20 +381,38 @@ final class WordVisualResolver: @unchecked Sendable {
     // MARK: Layers 2 & 3
 
     private func deepResolve(_ token: String) -> WordVisual? {
-        // Layer 2 — CoreGlyphs
-        lock.lock(); let sym = glyphIndex[token] ?? glyphIndex[Self.singular(token)]; lock.unlock()
-        if let sym { return .symbol(sym) }
-        // Layer 3 — NLEmbedding nearest anchor
-        guard let embedding else { return nil }
-        guard embedding.contains(token) else { return nil }
-        var best: (Double, String)?
-        for a in anchorWords {
-            let d = embedding.distance(between: token, and: a.word)
-            if d.isFinite, best == nil || d < best!.0 { best = (d, a.symbol) }
+        if let v = shallowResolve(token) { return v }
+        // Layer 3a — NLTagger lemma ("ran" → "run", "hearts" → "heart").
+        let lemma = Self.lemma(token)
+        if lemma != token, let v = shallowResolve(lemma) { return v }
+        // Layer 3b — nearest neighbours in Apple's English word embedding, re-resolved through layers 0–2.
+        lock.lock(); let e = embedding; lock.unlock()
+        guard let e else { return nil }
+        for candidate in [token, lemma] where e.contains(candidate) {
+            // Apple's English embedding reports cosine distances of ~0.75–1.15; good matches sit below ~0.98.
+            for (neighbor, distance) in e.neighbors(for: candidate, maximumCount: 10) where distance < 0.98 {
+                let n = Self.normalize(neighbor)
+                guard n.count >= 3, !Self.stopwords.contains(n) else { continue }
+                if let v = shallowResolve(n) { return v }
+            }
         }
-        // Apple's English embedding reports cosine distances of ~0.75–1.15; good matches sit below ~0.98.
-        if let best, best.0 < 0.98 { return .symbol(best.1) }
         return nil
+    }
+
+    /// Layers 0–2 for one token.
+    private func shallowResolve(_ token: String) -> WordVisual? {
+        if let v = Self.overrideLookup(token), Self.exists(v) { return v }
+        if let v = Self.curatedLookup(token), Self.exists(v) { return v }
+        lock.lock(); let sym = glyphIndex[token] ?? glyphIndex[Self.singular(token)]; lock.unlock()
+        if let sym, Self.exists(.symbol(sym)) { return .symbol(sym) }
+        return nil
+    }
+
+    static func lemma(_ token: String) -> String {
+        let tagger = NLTagger(tagSchemes: [.lemma])
+        tagger.string = token
+        let (tag, _) = tagger.tag(at: token.startIndex, unit: .word, scheme: .lemma)
+        return tag.map { normalize($0.rawValue) }.flatMap { $0.isEmpty ? nil : $0 } ?? token
     }
 
     private static func singular(_ t: String) -> String {
@@ -387,13 +447,48 @@ final class WordVisualResolver: @unchecked Sendable {
         lock.lock(); glyphIndex = verified; glyphIndexReady = true; lock.unlock()
     }
 
-    /// The NLEmbedding nearest-anchor layer is intentionally not loaded: the semantic engine and the curated
-    /// and CoreGlyphs layers cover the vocabulary, and the embedding model costs ~40 MB of resident memory.
+    /// Queue only. The embedding costs ~40 MB, so it is loaded on demand and released with the icon styles.
     private func loadEmbedding() {
+        lock.lock(); let ready = embeddingReady; lock.unlock()
+        guard !ready else { return }
+        let e = NLEmbedding.wordEmbedding(for: .english)
+        lock.lock(); embedding = e; embeddingReady = true; lock.unlock()
+    }
+
+    // MARK: Disk cache
+
+    private struct DiskCache: Codable {
+        var version = 2
+        var hits: [String: WordVisual] = [:]
+        var misses: [String] = []
+    }
+
+    private static var cacheURL: URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("EdgeGlow", isDirectory: true)
+            .appendingPathComponent("WordVisuals.json")
+    }
+
+    private func loadDiskCache() {
+        guard let url = Self.cacheURL, let data = try? Data(contentsOf: url),
+              let disk = try? JSONDecoder().decode(DiskCache.self, from: data), disk.version == DiskCache().version else { return }
         lock.lock()
-        embedding = nil
-        anchorWords = []
-        embeddingReady = true
+        for (k, v) in disk.hits where cache[k] == nil { cache[k] = .some(v) }
+        for k in disk.misses where cache[k] == nil { cache[k] = .some(nil) }
         lock.unlock()
+    }
+
+    private func saveDiskCache() {
+        lock.lock()
+        guard cacheDirty else { lock.unlock(); return }
+        cacheDirty = false
+        var disk = DiskCache()
+        for (k, v) in cache {
+            if let v = v { disk.hits[k] = v } else { disk.misses.append(k) }
+        }
+        lock.unlock()
+        guard let url = Self.cacheURL, let data = try? JSONEncoder().encode(disk) else { return }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: url, options: .atomic)
     }
 }

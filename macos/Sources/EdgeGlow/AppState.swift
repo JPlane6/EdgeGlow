@@ -182,6 +182,12 @@ final class AppState: ObservableObject {
         static let romanizeLyrics = "romanizeLyrics"
         static let lyricTextScale = "lyricTextScale"
         static let lyricVerticalPosition = "lyricVerticalPosition"
+        static let lyricColorsCustom = "lyricColorsCustom"
+        static let lyricTextColor = "lyricTextColor"
+        static let lyricHighlightColor = "lyricHighlightColor"
+        static let lyricSecondaryColor = "lyricSecondaryColor"
+        static let orbitalShowTrackInfo = "orbitalShowTrackInfo"
+        static let orbitalReplacesGlow = "orbitalReplacesGlow"
         // Removed settings, cleared on launch.
         static let legacyNotchGlowEnabled = "notchGlowEnabled"
         static let legacySelectedDisplayID = "selectedDisplayID"
@@ -259,6 +265,18 @@ final class AppState: ObservableObject {
     @Published var lyricTextScale: Double { didSet { defaults.set(lyricTextScale, forKey: Key.lyricTextScale) } }
     /// 0 = top of the screen, 1 = bottom.
     @Published var lyricVerticalPosition: Double { didSet { defaults.set(lyricVerticalPosition, forKey: Key.lyricVerticalPosition) } }
+    /// Use the three lyric color slots below instead of the artwork-synced palette.
+    @Published var lyricColorsCustom: Bool { didSet { defaults.set(lyricColorsCustom, forKey: Key.lyricColorsCustom) } }
+    /// Lyric color slots, stored as `#RRGGBBAA`.
+    @Published var lyricTextColor: String { didSet { defaults.set(lyricTextColor, forKey: Key.lyricTextColor) } }
+    @Published var lyricHighlightColor: String { didSet { defaults.set(lyricHighlightColor, forKey: Key.lyricHighlightColor) } }
+    @Published var lyricSecondaryColor: String { didSet { defaults.set(lyricSecondaryColor, forKey: Key.lyricSecondaryColor) } }
+    /// Orbital style: show the compact Now Playing pill in the bottom-left corner.
+    @Published var orbitalShowTrackInfo: Bool { didSet { defaults.set(orbitalShowTrackInfo, forKey: Key.orbitalShowTrackInfo) } }
+    /// Orbital style: hide the screen-edge glow while Orbital is the lyric style (its ring takes over).
+    @Published var orbitalReplacesGlow: Bool { didSet { defaults.set(orbitalReplacesGlow, forKey: Key.orbitalReplacesGlow) } }
+    /// Plays the built-in demo song through the lyric stage, even with nothing playing (not persisted).
+    @Published var lyricsDemo = CommandLine.arguments.contains("--lyrics-demo")
     /// Display UUIDs (`NSScreen.edgeGlowIdentifier`) that get an overlay. Empty hides the glow everywhere.
     /// IDs of unplugged displays are kept, so the glow returns when that monitor is reconnected.
     @Published var activeDisplays: Set<String> { didSet { saveActiveDisplays() } }
@@ -275,6 +293,12 @@ final class AppState: ObservableObject {
             Key.cometLength: 0.18,
             Key.lyricTextScale: 1.0,
             Key.lyricVerticalPosition: 0.5,
+            Key.lyricColorsCustom: false,
+            Key.lyricTextColor: "#FFFFFFFF",
+            Key.lyricHighlightColor: "#5EE0FFFF",
+            Key.lyricSecondaryColor: "#B387FFFF",
+            Key.orbitalShowTrackInfo: false,
+            Key.orbitalReplacesGlow: false,
         ])
         thickness = defaults.double(forKey: Key.thickness)
         glowSpread = defaults.double(forKey: Key.glowSpread)
@@ -290,9 +314,15 @@ final class AppState: ObservableObject {
         displayMode = DisplayMode(rawValue: defaults.string(forKey: Key.displayMode) ?? "") ?? .both
         romanizeLyrics = defaults.object(forKey: Key.romanizeLyrics) as? Bool ?? true
         lyricFont = LyricFont(rawValue: defaults.string(forKey: Key.lyricFont) ?? "") ?? .sfPro
-        lyricStyle = LyricStyle(rawValue: defaults.string(forKey: Key.lyricStyle) ?? "") ?? .constellation
+        lyricStyle = LyricStyle(stored: defaults.string(forKey: Key.lyricStyle))
         lyricTextScale = defaults.double(forKey: Key.lyricTextScale)
         lyricVerticalPosition = defaults.double(forKey: Key.lyricVerticalPosition)
+        lyricColorsCustom = defaults.bool(forKey: Key.lyricColorsCustom)
+        lyricTextColor = defaults.string(forKey: Key.lyricTextColor) ?? "#FFFFFFFF"
+        lyricHighlightColor = defaults.string(forKey: Key.lyricHighlightColor) ?? "#5EE0FFFF"
+        lyricSecondaryColor = defaults.string(forKey: Key.lyricSecondaryColor) ?? "#B387FFFF"
+        orbitalShowTrackInfo = defaults.bool(forKey: Key.orbitalShowTrackInfo)
+        orbitalReplacesGlow = defaults.bool(forKey: Key.orbitalReplacesGlow)
 
         if let stored = defaults.stringArray(forKey: Key.activeDisplays) {
             activeDisplays = Set(stored)
@@ -324,7 +354,18 @@ final class AppState: ObservableObject {
     var audioReactive: Bool { isPlaying && levelSource != .none }
 
     /// Whether the overlay should currently be lit at all: only while verified music is playing.
-    var glowActive: Bool { displayMode.glowOn && isPlaying }
+    var glowActive: Bool { glowRimEnabled && isPlaying }
+
+    /// The edge glow panels exist: the mode includes the rim, and Orbital isn't set to replace it.
+    var glowRimEnabled: Bool {
+        Self.glowRimEnabled(mode: displayMode, style: lyricStyle, orbitalReplacesGlow: orbitalReplacesGlow)
+    }
+
+    static func glowRimEnabled(mode: DisplayMode, style: LyricStyle, orbitalReplacesGlow: Bool) -> Bool {
+        guard mode.glowOn else { return false }
+        // Orbital's own ring replaces the rim only while lyrics are actually on screen.
+        return !(orbitalReplacesGlow && style == .orbital && mode.lyricsOn)
+    }
 
     var targetPrimary: RGBColor { useCustomColors ? customPrimary : extractedPrimary }
     var targetSecondary: RGBColor { useCustomColors ? customSecondary : extractedSecondary }

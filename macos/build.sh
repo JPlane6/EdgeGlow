@@ -53,9 +53,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.2.5</string>
+	<string>2.0.0</string>
 	<key>CFBundleVersion</key>
-	<string>8</string>
+	<string>9</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
@@ -92,7 +92,24 @@ swiftc "${SOURCES[@]}" \
     -target "$(uname -m)-apple-macos14.0" \
     -o "$MACOS_DIR/$NAME"
 
+echo "==> Compiling Metal shaders into $RES_DIR/default.metallib"
+# SwiftUI's ShaderLibrary.default loads Contents/Resources/default.metallib. The Metal compiler ships with
+# Xcode (Xcode 26+: Settings > Components > Metal Toolchain, or `xcodebuild -downloadComponent MetalToolchain`);
+# Command Line Tools alone have none. Without it the app still builds and runs, with shader effects off.
+SHADERS="Sources/EdgeGlow/Lyrics/Shaders/Shaders.metal"
+if xcrun -sdk macosx -f metal >/dev/null 2>&1 && xcrun -sdk macosx -f metallib >/dev/null 2>&1; then
+    AIR="$(mktemp -d)/Shaders.air"
+    xcrun -sdk macosx metal -c "$SHADERS" -o "$AIR"
+    xcrun -sdk macosx metallib "$AIR" -o "$RES_DIR/default.metallib"
+    rm -f "$AIR"
+    echo "    built default.metallib ($(du -h "$RES_DIR/default.metallib" | cut -f1))"
+else
+    echo "    warning: no Metal toolchain (xcrun metal); fisheye lens and motion blur will be disabled" >&2
+fi
+
 echo "==> Code-signing (${SIGN_IDENTITY:-ad-hoc})"
+# iCloud-synced folders (File Provider) stamp Finder info onto the bundle, which codesign rejects.
+xattr -cr "$APP" 2>/dev/null || true
 codesign --force --deep --sign "${SIGN_IDENTITY:--}" --entitlements Config/entitlements.plist "$APP"
 
 if $MAKE_DMG; then

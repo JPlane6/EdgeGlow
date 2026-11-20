@@ -115,10 +115,20 @@ Settings are stored in `%APPDATA%\EdgeGlow\settings.json`.
 EdgeGlow shows synced lyrics next to the edge glow. The popover's mode picker chooses **Both**, **Glow Only**,
 **Lyrics Only** or **Off** (Off stops rendering, audio capture and media polling).
 
-- **11 styles**, all drawn by one Metal renderer with a real 3D perspective camera: Ship, Visual, Fisheye,
-  Fisheye Visual, Constellation, Branches, Web, Codestyle Visual, Constellation 3D, HyperShip 3D, Orbital Web 3D.
-  A semantic engine tags words (speed, impact, fire, heart, cosmic, vibe) and adds restrained accents and SF Symbol icons.
-- **Fonts:** SF Pro, SF Rounded, New York, Helvetica Neue, Avenir Next, Futura, Didot.
+- **14 styles** (macOS), SwiftUI scenes driven every frame by `TimelineView(.animation)` from an extrapolated playhead:
+  Ship, Fisheye, Visual, Fisheye Visual, Codestyle, Codestyle Visual, Branches, Web, Constellation, four
+  Apple Design styles (Messages, Money, Map, Notifications) and Orbital. The Visual styles put an SF Symbol or emoji beside
+  words (curated table, Apple's CoreGlyphs search index, NaturalLanguage lemma + word-embedding neighbours).
+  Apple Design Map and the location cards use real dark-mode `MKMapSnapshotter` maps.
+- **Orbital:** the album cover as a disc in the center of the screen, pulsing with the bass, wrapped by a 120-spoke
+  360° equalizer fed by the live system-audio FFT (48 log-spaced bands, mirrored left/right; a beat-synced wave
+  stands in when audio isn't captured), with the line in bold kinetic caps on the left. Popover options: **Badge**
+  (a corner Now Playing pill) and **Replace** (hide the edge glow while Orbital shows).
+- **Shaders:** a 13-tap directional motion blur and a fisheye lens, as SwiftUI `[[ stitchable ]]` Metal shaders.
+  `build.sh` compiles them into `default.metallib` when a Metal toolchain is installed (Xcode 26+:
+  `xcodebuild -downloadComponent MetalToolchain`); Command Line Tools-only builds run with the effects off.
+- **Fonts:** SF Pro, SF Rounded, New York, Helvetica Neue, Avenir Next, Futura, Didot (the Apple Design styles always
+  use SF Pro and system colors). **Colors:** text, highlight and secondary slots, synced to the album art or custom.
 - **Sources:** Spotify and Apple Music (exact position), plus browser tabs (YouTube, YouTube Music, SoundCloud,
   JioSaavn, Gaana, ...) through the HTML5 playhead when "Allow JavaScript from Apple Events" is on, or an
   audio-gated stopwatch otherwise.
@@ -130,14 +140,15 @@ EdgeGlow shows synced lyrics next to the edge glow. The popover's mode picker ch
 - **Audio:** a CoreAudio process tap (macOS 14.2+; macOS asks once for "System Audio Recording"), with a
   ScreenCaptureKit audio-only fallback.
 
-Debug helpers: `EdgeGlow --render-style-previews <dir>` renders every style to PNG,
+Try every style without a track: the popover's **Demo** pill (or `EdgeGlow --lyrics-demo`) plays a built-in timed song.
+Debug helpers: `EdgeGlow --render-style-previews <dir> [style ...]` renders styles to PNG,
 `EdgeGlow --test-lyrics` runs the lyric lookup against a few Hindi / Punjabi tracks.
 
-**Legibility on any wallpaper:** a dynamic dark scrim (rgba 8,8,12 at 78 % in the core, feathered) sits behind the
+**Legibility on any wallpaper (Windows renderer):** a dynamic dark scrim (rgba 8,8,12 at 78 % in the core, feathered) sits behind the
 focal words; every word gets a crisp 1.5 px dark outline plus a wide 14 px ambient shadow under its accent glow; and
 filaments / web rings / branch splines sit on a 3 px dark under-stroke. Verified over pure white and a light-mode browser page.
 
-**Windows:** the same 11 styles, 7 fonts, 4-state mode selector, automatic sync pill and Hindi pipeline live in
+**Windows:** the original 11 3D styles, 7 fonts, 4-state mode selector, automatic sync pill and Hindi pipeline live in
 `windows/EdgeGlow.Windows/Lyrics` (pure SkiaSharp: vector glyphs drawn through a perspective homography, so text stays razor sharp).
 Differences from macOS: icons are Segoe UI Emoji instead of SF Symbols, the CoreGlyphs / NLEmbedding icon tiers have no Windows
 counterpart (curated + Hinglish tables only), Urdu romanization is approximate (no vowel marks), fonts map to Segoe UI Variable,

@@ -179,10 +179,13 @@ struct MenuBarPopoverView: View {
                 }
                 labeledPicker("Font") {
                     Picker("", selection: $state.lyricFont) {
-                        ForEach(LyricFont.allCases.filter { $0 != .sfMono }) { Text($0.title).tag($0) }
+                        ForEach(LyricFont.allCases) { Text($0.title).tag($0) }
                     }
                 }
+                // The Apple Design styles always use SF Pro and the system colors.
+                .disabled(state.lyricStyle.usesNativeApple)
             }
+            lyricColorRow
             HStack(spacing: 8) {
                 HStack(spacing: 6) {
                     HStack(spacing: 1) {
@@ -198,9 +201,47 @@ struct MenuBarPopoverView: View {
                     .controlSize(.small)
             }
             iconSlider("arrow.up.and.down", "Position", value: $state.lyricVerticalPosition, range: 0...1)
-            pill("Romanize", isOn: $state.romanizeLyrics)
+            HStack(spacing: 6) {
+                pill("Romanize", isOn: $state.romanizeLyrics)
+                pill("Demo", symbol: "play.circle.fill", isOn: $state.lyricsDemo)
+            }
+            if state.lyricStyle == .orbital {
+                // Orbital-only options: the corner Now Playing pill, and letting the ring stand in for the rim.
+                HStack(spacing: 6) {
+                    pill("Badge", symbol: "music.note", isOn: $state.orbitalShowTrackInfo)
+                        .help("Show a small Now Playing pill in the bottom-left corner")
+                    pill("Replace", symbol: "circle.dashed", isOn: $state.orbitalReplacesGlow)
+                        .help("Hide the screen-edge glow while Orbital is showing; its ring takes over")
+                }
+            }
         }
         .card()
+    }
+
+    /// Text, highlight and secondary lyric colors: artwork-synced dots, or three pickers when custom.
+    private var lyricColorRow: some View {
+        HStack(spacing: 8) {
+            if state.lyricColorsCustom {
+                ColorPicker("", selection: hexBinding(\.lyricTextColor), supportsOpacity: true).labelsHidden().help("Text")
+                ColorPicker("", selection: hexBinding(\.lyricHighlightColor), supportsOpacity: true).labelsHidden().help("Highlight")
+                ColorPicker("", selection: hexBinding(\.lyricSecondaryColor), supportsOpacity: true).labelsHidden().help("Secondary")
+            } else {
+                colorDot(RGBColor.white)
+                colorDot(state.targetPrimary)
+                colorDot(state.targetSecondary)
+            }
+            Spacer()
+            pill("Text colors", symbol: "textformat", isOn: $state.lyricColorsCustom)
+        }
+        .disabled(state.lyricStyle.usesNativeApple)
+        .opacity(state.lyricStyle.usesNativeApple ? 0.45 : 1)
+    }
+
+    private func hexBinding(_ keyPath: ReferenceWritableKeyPath<AppState, String>) -> Binding<Color> {
+        Binding(
+            get: { (RGBA(hex: state[keyPath: keyPath]) ?? RGBA(r: 1, g: 1, b: 1)).color },
+            set: { state[keyPath: keyPath] = RGBA($0).hexRGBA }
+        )
     }
 
     // MARK: Displays

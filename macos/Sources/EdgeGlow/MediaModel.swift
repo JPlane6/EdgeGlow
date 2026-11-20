@@ -73,6 +73,14 @@ final class PlaybackClock: @unchecked Sendable {
         return playing ? lastPolledPosition + (now - lastPollTime) : lastPolledPosition
     }
 
+    /// The clock as a wall-clock anchor for the lyric stage (`elapsed + (date - timestamp) * rate`).
+    func playheadAnchor() -> PlayheadAnchor {
+        lock.lock()
+        let position = lastPolledPosition, polledAt = lastPollTime, rate = playing ? 1.0 : 0.0
+        lock.unlock()
+        return PlayheadAnchor(elapsed: position, timestamp: Date(timeIntervalSinceNow: polledAt - CACurrentMediaTime()), rate: rate)
+    }
+
     /// Re-anchors the clock to a position that was sampled at `time` (a CACurrentMediaTime value).
     func anchor(position: Double, at time: CFTimeInterval) {
         lock.lock()

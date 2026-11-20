@@ -16,6 +16,8 @@ final class LyricsModel: ObservableObject {
 
     let state: AppState
     let rhythm = RhythmEngine()
+    /// Album art, its accent blooms and the three lyric color slots.
+    let art: ArtworkColorSync
     private let provider = LyricsProvider()
 
     @Published private(set) var lyrics: TimedLyrics?
@@ -29,9 +31,21 @@ final class LyricsModel: ObservableObject {
 
     init(state: AppState) {
         self.state = state
+        art = ArtworkColorSync(state: state)
     }
 
     func start() {
+        art.start()
+        state.$lyricsDemo
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] on in
+                guard let self else { return }
+                demoStart = on ? Date() : nil
+                if on { WordVisualResolver.shared.prepare(DemoLyrics.song) }
+            }
+            .store(in: &bag)
+
         // Track identity from the shared media bridge. receive(on:) defers past @Published's willSet.
         Publishers.CombineLatest4(state.$mediaSource, state.$trackName, state.$artistName, state.$trackDuration)
             .combineLatest(state.$displayMode.map(\.lyricsOn).removeDuplicates())
@@ -46,7 +60,10 @@ final class LyricsModel: ObservableObject {
         state.$lyricStyle
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.prepareIconsIfNeeded() }
+            .sink { [weak self] style in
+                if !style.needsWordVisuals { WordVisualResolver.shared.releaseDeepLayers() }
+                self?.prepareIconsIfNeeded()
+            }
             .store(in: &bag)
 
         state.$romanizeLyrics
@@ -67,6 +84,7 @@ final class LyricsModel: ObservableObject {
     }
 
     func stop() {
+        art.stop()
         bag.removeAll()
         trackChanged(nil)
     }
@@ -131,10 +149,11 @@ final class LyricsModel: ObservableObject {
         state.vocalLock.setWordStarts(result.words.map(\.start).sorted())
     }
 
-    /// SF Symbol and emoji matching loads a few megabytes of glyph data, so it only runs for the Visual styles.
+    /// SF Symbol and emoji matching loads a few megabytes of glyph data, so it only runs for the icon styles.
     private func prepareIconsIfNeeded() {
-        guard state.lyricStyle.showsIcons, let lyrics else { return }
-        WordVisualResolver.shared.prepare(lyrics)
+        guard state.lyricStyle.needsWordVisuals else { return }
+        if let lyrics { WordVisualResolver.shared.prepare(lyrics) }
+        if state.lyricsDemo { WordVisualResolver.shared.prepare(DemoLyrics.song) }
     }
 
     /// Devanagari / Gurmukhi / Arabic lines → Latin, word by word so timings are untouched.
@@ -176,16 +195,33 @@ final class LyricsModel: ObservableObject {
         return max(0, position - state.audioLatency.value + state.vocalLock.correction(at: now))
     }
 
-    // MARK: Theme
+    // MARK: Stage source
 
-    /// Lyric colors follow EdgeGlow's palette, so the text and the rim always agree (including custom colors).
-    var theme: LyricTheme {
-        LyricTheme(
-            font: state.lyricFont,
-            text: .white,
-            highlight: state.targetPrimary.color,
-            secondary: state.targetSecondary.color,
-            scale: state.lyricTextScale,
-            meshColors: [])
+    @Published private var demoStart: Date?
+
+    /// What the lyric stage should play right now: the built-in demo song, or the detected track's lyrics
+    /// while it plays. nil renders nothing.
+    struct ActiveSource {
+        var lyrics: TimedLyrics
+        var anchor: PlayheadAnchor
+        /// Added to the extrapolated position (latency compensation and vocal-onset trim).
+        var delay: Double
+        /// The demo loops.
+        var loop: Double?
+        var title: String
+        var artist: String
+    }
+
+    func activeSource() -> ActiveSource? {
+        if state.lyricsDemo {
+            let song = DemoLyrics.song
+            return ActiveSource(lyrics: song, anchor: PlayheadAnchor(elapsed: 0, timestamp: demoStart ?? Date(), rate: 1),
+                                delay: 0, loop: song.lastEnd + 3, title: DemoLyrics.title, artist: DemoLyrics.artist)
+        }
+        guard state.isPlaying, let lyrics, !lyrics.isEmpty else { return nil }
+        let now = CACurrentMediaTime()
+        let delay = -state.audioLatency.value + state.vocalLock.correction(at: now)
+        return ActiveSource(lyrics: lyrics, anchor: state.playbackClock.playheadAnchor(), delay: delay, loop: nil,
+                            title: state.trackName, artist: state.artistName)
     }
 }

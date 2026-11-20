@@ -61,6 +61,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Install the Metal toolchain (for the lyric shaders)
+        # Xcode 26+ ships the Metal compiler as a separate component; without it build.sh skips default.metallib.
+        continue-on-error: true
+        run: xcrun -sdk macosx -f metal || xcodebuild -downloadComponent MetalToolchain
+
       - name: Build EdgeGlow.dmg
         working-directory: macos
         run: ./build.sh --dmg --no-launch

@@ -25,9 +25,11 @@ if CommandLine.arguments.contains("--test-lyrics") {
 }
 
 if let flag = CommandLine.arguments.firstIndex(of: "--render-style-previews") {
-    // Debug: render every lyric style to PNG files and exit.
-    let directory = CommandLine.arguments.indices.contains(flag + 1) ? CommandLine.arguments[flag + 1] : "styles"
-    MainActor.assumeIsolated { StylePreviews.run(outputDir: directory) }
+    // Debug: render lyric styles to PNG files and exit. `--render-style-previews <dir> [style ...]`
+    let args = Array(CommandLine.arguments[(flag + 1)...])
+    let directory = args.first ?? "styles"
+    let styles = args.dropFirst().compactMap(LyricStyle.init(rawValue:))
+    MainActor.assumeIsolated { StylePreviews.run(outputDir: directory, styles: styles.isEmpty ? LyricStyle.allCases : styles) }
     exit(0)
 }
 
