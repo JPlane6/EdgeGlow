@@ -23,6 +23,8 @@ struct AppleMapScene: View {
                 .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).stroke(Color.white.opacity(0.12), lineWidth: 1))
                 .shadow(color: .black.opacity(0.5), radius: 18, y: 6)
+                // A barely-there thump on kicks; the map stays readable.
+                .scaleEffect(f.thump(0.012))
                 .position(x: rect.midX, y: rect.midY)
             }
         }
@@ -186,7 +188,7 @@ struct AppleMapStage: View {
             ctx.fill(Path(ellipseIn: CGRect(x: first.x - 5 * ink, y: first.y - 5 * ink, width: 10 * ink, height: 10 * ink)), with: .color(.white.opacity(0.85)))
         }
         if let last = o.route.last { MapMath.drawPin(at: last, color: o.pin, in: ctx, scale: 1.1 * ink, drop: o.drop) }
-        MapMath.drawLocationDot(at: o.dot, in: ctx, clock: frame.clock, scale: ink)
+        MapMath.drawLocationDot(at: o.dot, in: ctx, clock: frame.clock, scale: ink, kick: frame.kick)
     }
 }
 

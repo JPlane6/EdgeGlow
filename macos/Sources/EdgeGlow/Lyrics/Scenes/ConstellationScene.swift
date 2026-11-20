@@ -63,10 +63,10 @@ struct ConstellationScene: View {
             line.addLine(to: pts[i - 1].lerp(pts[i], f))
             if f < 1 || frame.isActive(w) {
                 var c = ctx
-                c.addFilter(.shadow(color: p.highlight, radius: 5))
-                c.stroke(line, with: .color(p.highlight), style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+                c.addFilter(.shadow(color: p.highlight, radius: 5 * (1 + frame.kick)))
+                c.stroke(line, with: .color(p.highlight), style: StrokeStyle(lineWidth: 1.8 * frame.thump(0.4), lineCap: .round))
             } else {
-                ctx.stroke(line, with: .color(p.secondary.opacity(0.55)), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+                ctx.stroke(line, with: .color(p.secondary.opacity(0.55)), style: StrokeStyle(lineWidth: 1.4 * frame.thump(0.4), lineCap: .round))
             }
         }
 
@@ -84,11 +84,12 @@ struct ConstellationScene: View {
             let rotation: Double
             let color: Color
             if active {
-                radius = (12 + 2 * CGFloat(sin(frame.clock * 4))) * pop
-                rotation = frame.clock * 0.5
+                // The lit star flares sharply on transients (spikes up to +65%, a quick twist).
+                radius = (12 + 2 * CGFloat(sin(frame.clock * 4))) * pop * (1 + 0.65 * max(frame.kick, frame.flux * 0.8))
+                rotation = frame.clock * 0.5 + Double(frame.kick) * 0.35
                 color = p.highlight
             } else {
-                radius = (6 + 0.9 * CGFloat(sin(frame.clock * 3 + Double(i)))) * pop
+                radius = (6 + 0.9 * CGFloat(sin(frame.clock * 3 + Double(i)))) * pop * frame.thump(0.25)
                 rotation = 0
                 color = p.text.mixed(p.highlight, 0.3)
             }

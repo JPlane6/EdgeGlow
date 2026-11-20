@@ -61,7 +61,8 @@ struct AppleMoneyScene: View {
         let cards = MoneyPlan.cache.value(for: f.songKey) { MoneyPlan.build(f.lyrics) }
         let feed = MoneyFeed(frame: f, cards: cards)
         MoneyFeedCanvas(frame: f, feed: feed, maps: feed.mapPictures())
-            .motionBlur(CGVector(dx: 0, dy: max(-36, min(36, feed.travelVelocity / 60 * 1.3))), enabled: f.shaders)
+            // Kicks add a short vertical smear on top of the scroll blur.
+            .motionBlur(CGVector(dx: 0, dy: max(-36, min(36, feed.travelVelocity / 60 * 1.3 + 9 * f.kick))), enabled: f.shaders)
     }
 }
 
@@ -168,11 +169,14 @@ struct MoneyFeedCanvas: View {
         let back = CGFloat(min(3, p.rank))
         ctx.opacity = max(0.4, 1 - 0.16 * Double(back)) * Motion.smooth(p.age / 0.1)
         let enter = CGFloat(p.enter)
-        let scale = (1 - 0.025 * back) * (0.82 + 0.18 * enter)
+        // The newest card thumps with the beat (scale, squash and a hair of tilt).
+        let beat = p.rank == 0 ? frame.kick : 0
+        let scale = (1 - 0.025 * back) * (0.82 + 0.18 * enter) * (1 + 0.025 * beat)
+        let squash = 1 + 0.05 * (1 - enter) + 0.03 * beat
         let anchor = CGPoint(x: rect.midX, y: rect.maxY)
         ctx.translateBy(x: anchor.x, y: anchor.y)
-        ctx.rotate(by: .degrees(Double(1 - enter) * (p.index % 2 == 0 ? 3 : -3)))
-        ctx.scaleBy(x: scale / (1 + 0.05 * (1 - enter)), y: scale * (1 + 0.05 * (1 - enter)))
+        ctx.rotate(by: .degrees(Double(1 - enter) * (p.index % 2 == 0 ? 3 : -3) + Double(beat) * (p.index % 2 == 0 ? 0.7 : -0.7)))
+        ctx.scaleBy(x: scale / squash, y: scale * squash)
         ctx.translateBy(x: -anchor.x, y: -anchor.y)
 
         let words = frame.group(card.line)
@@ -277,10 +281,12 @@ struct MoneyFeedCanvas: View {
         let sung = words.filter(frame.arrived)
         let visible = Array(sung.suffix(5))
         tc.draw(lyric(visible, size: fs, weight: .semibold), at: CGPoint(x: textRect.maxX, y: textRect.midY), anchor: .trailing)
-        // Equalizer bars tinted by the artwork accent.
+        // Equalizer bars tinted by the artwork accent, driven by the live spectrum (bass → highs).
         let tint = bloom(0)
+        let bands = frame.audio.bands
         for i in 0..<4 {
-            let level = 0.35 + 0.65 * abs(sin(frame.clock * (5.2 + Double(i) * 1.7) + Double(i)))
+            let band = bands.isEmpty ? 0 : bands[min(bands.count - 1, 3 + i * bands.count / 4)]
+            let level = 0.2 + 0.8 * Motion.clamp01(band * 1.25 + Double(frame.kick) * (i == 0 ? 0.4 : 0.15))
             let bh = 22 * s * CGFloat(level)
             let bx = pill.maxX - 22 * s - CGFloat(3 - i) * 6 * s
             c.fill(Path(roundedRect: CGRect(x: bx - 1.6 * s, y: pill.midY - bh / 2, width: 3.2 * s, height: bh), cornerRadius: 1.6 * s), with: .color(tint))
@@ -341,8 +347,8 @@ struct MoneyFeedCanvas: View {
             ctx.draw(Text(Image(systemName: "checkmark.circle.fill")).font(.system(size: 34 * s * CGFloat(0.6 + 0.4 * k), weight: .regular)).foregroundColor(AppleColors.green), at: center)
             ctx.text("Done", font: .system(size: 13 * s, weight: .semibold), color: .white, at: CGPoint(x: center.x, y: center.y + 28 * s))
         } else {
-            let pulse = 0.5 + 0.5 * sin(frame.clock * 5)
-            ctx.draw(Text(Image(systemName: "faceid")).font(.system(size: 34 * s, weight: .regular)).foregroundColor(AppleColors.blue.opacity(0.6 + 0.4 * pulse)), at: center)
+            let pulse = max(0.5 + 0.5 * sin(frame.clock * 5), Double(frame.kick))
+            ctx.draw(Text(Image(systemName: "faceid")).font(.system(size: 34 * s * frame.thump(0.1), weight: .regular)).foregroundColor(AppleColors.blue.opacity(0.6 + 0.4 * pulse)), at: center)
             ctx.text("Confirm with Face ID", font: .system(size: 13 * s, weight: .semibold), color: .white.opacity(0.8), at: CGPoint(x: center.x, y: center.y + 28 * s))
         }
     }

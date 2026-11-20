@@ -142,7 +142,8 @@ struct AppleNotifyScene: View {
         let items = NotifyPlan.cache.value(for: f.songKey) { NotifyPlan.build(f.lyrics) }
         let feed = NotifyFeed(frame: f, items: items)
         NotifyFeedCanvas(frame: f, feed: feed)
-            .motionBlur(CGVector(dx: 0, dy: max(-32, min(32, feed.velocity))), enabled: f.shaders)
+            // Kicks add a short vertical smear on top of the scroll blur.
+            .motionBlur(CGVector(dx: 0, dy: max(-32, min(32, feed.velocity + 8 * f.kick))), enabled: f.shaders)
     }
 }
 
@@ -157,6 +158,8 @@ struct NotifyFeedCanvas: View {
                     .frame(width: panel.rect.width, height: panel.rect.height)
                     .rotation3DEffect(.degrees(14 * (1 - panel.moving)), axis: (x: 1, y: 0, z: 0), anchor: .bottom, perspective: 0.5)
                     .scaleEffect(x: 1, y: 0.92 + 0.08 * min(1, panel.moving), anchor: .top)
+                    // The front notification thumps with the beat.
+                    .scaleEffect(panel.depth < 0.5 ? frame.thump(0.022) : 1)
                     .blur(radius: panel.soft)
                     .opacity(panel.alpha)
                     .position(x: panel.rect.midX, y: panel.rect.midY)
@@ -231,7 +234,7 @@ private struct NotifyPanelView: View {
                 Image(systemName: "waveform")
                     .font(.system(size: 15 * s, weight: .bold))
                     .foregroundStyle(tint)
-                    .scaleEffect(x: 1, y: 0.75 + 0.25 * CGFloat(abs(sin(frame.clock * 6))))
+                    .scaleEffect(x: 1, y: 0.55 + 0.25 * CGFloat(abs(sin(frame.clock * 6))) + 0.35 * max(frame.kick, frame.energy * 0.6))
             }
             .padding(.horizontal, 8 * s)
             .padding(.trailing, 6 * s)
@@ -298,8 +301,11 @@ private struct NotifyPanelView: View {
 
     @ViewBuilder private func border(_ shape: RoundedRectangle) -> some View {
         if panel.item.kind == .siri {
-            shape.strokeBorder(AngularGradient(colors: Self.siri, center: .center, angle: .degrees(frame.clock * 90)), lineWidth: 2.5 * s)
-                .shadow(color: AppleColors.purple.opacity(0.6), radius: 8)
+            // The Siri edge glow flares with kicks and energy.
+            shape.strokeBorder(AngularGradient(colors: Self.siri, center: .center, angle: .degrees(frame.clock * 90)),
+                               lineWidth: 2.5 * s * frame.thump(0.6))
+                .shadow(color: AppleColors.purple.opacity(min(1, 0.6 + 0.3 * Double(frame.kick) + 0.15 * Double(frame.energy))),
+                        radius: 8 + 14 * frame.kick)
         } else {
             shape.strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
         }
@@ -311,6 +317,11 @@ private struct NotifyPanelView: View {
             let k = CGFloat(max(0, panel.age) / 0.7)
             shape.stroke(Color.white.opacity(0.35 * Double(1 - k)), lineWidth: 2)
                 .padding(-10 * s * k)
+        } else if panel.depth < 0.5, frame.kick > 0.35 {
+            // Beat echo: a ring kicks out from the front notification on every hit.
+            let k = 1 - frame.kick
+            shape.stroke(Color.white.opacity(0.3 * Double(frame.kick)), lineWidth: 1.6)
+                .padding(-8 * s * k)
         }
     }
 }

@@ -25,7 +25,8 @@ struct FisheyeScene: View {
         }
         .animation(Motion.standard, value: center)
         .frame(width: lens.width, height: lens.height)
-        .fisheyeLens(enabled: true, size: lens)
+        // The lens pumps with heavy bass: 0.45 at rest, up to 0.60 on a hit.
+        .fisheyeLens(enabled: true, size: lens, strength: 0.45 + 0.15 * max(f.kick, max(0, f.bass - 0.5) * 2))
         .position(x: f.canvas.width / 2, y: f.bandCenterY)
     }
 
@@ -49,12 +50,13 @@ struct FisheyeScene: View {
                 .lineLimit(1)
                 .foregroundStyle(color)
             if withIcons, let v = WordVisualResolver.shared.visual(for: slot.word.text) {
-                VisualIcon(visual: v, size: size * 0.85, color: slot.isCenter ? p.highlight : p.secondary, age: frame.position - slot.visibleSince)
+                VisualIcon(visual: v, size: size * 0.85, color: slot.isCenter ? p.highlight : p.secondary, age: frame.position - slot.visibleSince,
+                           kick: slot.isCenter ? frame.kick : 0)
             }
         }
         .opacity(slot.isCenter ? 1.0 : 0.45)
-        .scaleEffect(slot.isCenter ? 1.08 : 0.88)
-        .shadow(color: slot.isCenter ? p.highlight.opacity(0.5) : .clear, radius: size * 0.18)
+        .scaleEffect(slot.isCenter ? 1.08 * frame.thump(0.08) : 0.88)
+        .shadow(color: slot.isCenter ? p.highlight.opacity(0.5 + 0.35 * Double(frame.kick)) : .clear, radius: size * 0.18 * (1 + frame.kick))
         .fixedSize()
     }
 }

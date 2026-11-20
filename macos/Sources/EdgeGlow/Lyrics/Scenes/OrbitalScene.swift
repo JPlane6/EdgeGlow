@@ -2,33 +2,27 @@ import AppKit
 import SwiftUI
 
 /// Orbital — the album cover as a disc in the middle of the screen, wrapped by a live 360° equalizer, with
-/// the current line in bold kinetic caps to its left. The ring reads EdgeGlow's live FFT (or a beat-synced
-/// stand-in when system audio isn't captured); the disc breathes with the bass.
+/// the current line in bold kinetic caps to its left. The ring reads EdgeGlow's live FFT and spectral flux
+/// (or a beat-timed stand-in when system audio isn't captured); the disc thumps with the bass and kick.
 struct OrbitalScene: View {
     let frame: LyricFrame
 
     var body: some View {
         let f = frame
         let layout = OrbitalLayout(frame: f)
-        let audio = f.orbital?.audio ?? .procedural(position: f.position, clock: f.clock, bpm: nil)
-        let bass = Motion.clamp01(audio.bass)
-        let pulse = 1 + 0.07 * CGFloat(bass)
-        let accent = f.palette.highlight
+        let pulse = 1 + 0.15 * f.bass
+        // Heavy hits (kick above 0.55) slam the rim and halo.
+        let hit = Motion.clamp01((f.audio.kick - 0.55) / 0.45)
         ZStack(alignment: .topLeading) {
             Canvas(opaque: false, colorMode: .nonLinear, rendersAsynchronously: true) { ctx, _ in
-                OrbitalRing.draw(in: ctx, layout: layout, audio: audio, pulse: pulse, palette: f.palette)
+                OrbitalRing.draw(in: ctx, layout: layout, frame: f, pulse: pulse)
             }
-            OrbitalDisc(artwork: f.track.artwork, diameter: layout.discRadius * 2, accent: accent, scale: layout.scale, bass: bass)
+            OrbitalDisc(artwork: f.track.artwork, diameter: layout.discRadius * 2, accent: f.palette.highlight,
+                        scale: layout.scale, bass: Double(f.bass), hit: hit)
                 .scaleEffect(pulse)
                 .position(layout.center)
             Canvas(opaque: false, colorMode: .nonLinear, rendersAsynchronously: true) { ctx, _ in
                 OrbitalLyrics.draw(in: ctx, frame: f, layout: layout)
-            }
-            if f.orbital?.showTrackInfo == true, !f.track.title.isEmpty {
-                OrbitalBadge(track: f.track, scale: min(1.25, max(0.9, f.textScale)))
-                    .padding(.leading, f.canvas.width * 0.06)
-                    .padding(.bottom, 22 * min(1.25, max(0.9, f.textScale)))
-                    .frame(width: f.canvas.width, height: f.canvas.height, alignment: .bottomLeading)
             }
         }
         .frame(width: f.canvas.width, height: f.canvas.height)
@@ -46,9 +40,12 @@ struct OrbitalLayout {
     /// Disc size relative to its default (line widths and glows follow it).
     let scale: CGFloat
     /// The lyric column. Beside the ring it spans 6%…36% of the width (never closer to the ring than the
-    /// longest spike plus its bloom); on narrow canvases it drops below the ring instead.
+    /// longest spike, its sparks and bloom); on narrow canvases it drops below the ring instead.
     let lyricRect: CGRect
     let lyricsBelow: Bool
+
+    /// Disc at full pulse + gap + spike + peak sparks + bloom.
+    private static func reach(_ r: CGFloat, _ ext: CGFloat, _ s: CGFloat) -> CGFloat { r * 1.15 + 4 * s + ext + 26 * s }
 
     init(frame f: LyricFrame) {
         let w = f.canvas.width, h = f.canvas.height
@@ -57,14 +54,21 @@ struct OrbitalLayout {
         let user = min(1.3, max(0.75, f.textScale / screenFactor))
         // 20% of the screen's short side; the lyric canvas is 85% of the screen.
         let r = min(w, h) * (0.20 / 0.85) * 0.5 * user
-        scale = r / 90
+        let s = r / 90
+        scale = s
         discRadius = r
-        maxExtension = r * 0.75
-        // Full reach: pulsed disc + gap + longest spike + bloom.
-        let reach = r * 1.07 + 4 * scale + maxExtension + 12 * scale
 
         let left = w * 0.06
-        let besideRight = min(w * 0.36, w * 0.5 - reach - 24 * scale)
+        let minColumn = 230 * min(1, f.textScale)
+        func columnRight(_ ext: CGFloat) -> CGFloat { min(w * 0.36, w * 0.5 - Self.reach(r, ext, s) - 20 * s) }
+        // Spikes reach 1.15 × the disc radius, shortened (down to 0.75×) only when the lyric column needs room.
+        var ext = r * 1.15
+        let shortfall = minColumn - (columnRight(ext) - left)
+        if shortfall > 0 { ext = max(r * 0.75, ext - shortfall) }
+        maxExtension = ext
+        let reach = Self.reach(r, ext, s)
+        let besideRight = columnRight(ext)
+
         if besideRight - left >= 190 * min(1, f.textScale) {
             lyricsBelow = false
             let cy = h < reach * 2 ? h / 2 : min(max(f.bandCenterY, reach), h - reach)
@@ -76,7 +80,7 @@ struct OrbitalLayout {
             lyricsBelow = true
             let cy = max(reach, min(h * 0.36, h - reach - 140 * f.textScale))
             center = CGPoint(x: w * 0.5, y: cy)
-            let top = cy + reach + 10 * scale
+            let top = cy + reach + 10 * s
             lyricRect = CGRect(x: w * 0.07, y: top, width: w * 0.86, height: max(80, h - top - 16))
         }
     }
@@ -90,8 +94,8 @@ enum OrbitalRing {
     static let spokes = 120
     static let cream = Color(hex: "#FFF8E7")
 
-    /// Spectrum value at `m` (0 = lowest band … 1 = highest), linearly interpolated with a light blur
-    /// across neighbors so adjacent spokes ripple together instead of flickering.
+    /// Spectrum value at `m` (0 = lowest band … 1 = highest), linearly interpolated with only a slight
+    /// blend of the neighbors, so individual bands spike on their own.
     static func value(_ bands: [Double], at m: Double) -> Double {
         guard bands.count > 1 else { return bands.first ?? 0 }
         func at(_ x: Double) -> Double {
@@ -99,33 +103,54 @@ enum OrbitalRing {
             let i = Int(p), j = min(i + 1, bands.count - 1)
             return bands[i] + (bands[j] - bands[i]) * (p - Double(i))
         }
-        let d = 0.6 / Double(bands.count)
-        return Motion.clamp01(0.25 * at(m - d) + 0.5 * at(m) + 0.25 * at(m + d))
+        let d = 0.5 / Double(bands.count)
+        return max(0, 0.12 * at(m - d) + 0.76 * at(m) + 0.12 * at(m + d))
     }
 
-    static func draw(in ctx: GraphicsContext, layout l: OrbitalLayout, audio: OrbitalAudio, pulse: CGFloat, palette p: LyricPalette) {
+    /// Spoke amplitudes (0…1): level plus fresh transients, through a contrast curve for jagged peaks.
+    static func amplitudes(_ audio: LyricAudio) -> (amp: [Double], flux: [Double]) {
+        let n = spokes
+        var amp = [Double](repeating: 0, count: n), flux = [Double](repeating: 0, count: n)
+        for k in 0..<n {
+            // Low end at the top, mirrored across the vertical axis: both halves meet seamlessly.
+            let m = Double(min(k, n - k)) / Double(n / 2)
+            let raw = value(audio.bands, at: m)
+            let fx = value(audio.bandFlux, at: m)
+            amp[k] = pow(Motion.clamp01(raw * 1.45 + fx * 2.2), 1.35)
+            flux[k] = fx
+        }
+        return (amp, flux)
+    }
+
+    static func draw(in ctx: GraphicsContext, layout l: OrbitalLayout, frame f: LyricFrame, pulse: CGFloat) {
+        let p = f.palette
         let c = l.center
         let base = l.discRadius * pulse + 4 * l.scale
         let ext = l.maxExtension
         let n = spokes
+        let (amp, flux) = amplitudes(f.audio)
+        let sparks = OrbitalPeaks.shared.step(levels: amp, flux: flux, clock: f.clock, still: f.still)
+        let surge = Motion.clamp01(0.55 * f.audio.energy + 0.6 * f.audio.kick)
 
         var tips: [CGPoint] = []
         tips.reserveCapacity(n)
         var bars = Path()
+        var dots = Path()
+        let dotR = 1.7 * l.scale
         for k in 0..<n {
-            // Start at the top and go clockwise; the low end sits at the top and the spectrum is mirrored
-            // across the vertical axis, so both halves meet seamlessly at the top and the bottom.
             let angle = -Double.pi / 2 + 2 * Double.pi * Double(k) / Double(n)
-            let m = Double(min(k, n - k)) / Double(n / 2)
-            let amp = value(audio.bands, at: m)
-            // A small floor keeps a tight ripple during quiet vocals; drops spike out to the full extension.
-            let len = ext * CGFloat(0.035 + 0.965 * amp)
             let dir = CGPoint(x: cos(angle), y: sin(angle))
-            let inner = c + dir * base
+            // A small floor keeps a tight ripple during quiet vocals; drops spike out to the full extension.
+            let len = ext * CGFloat(0.035 + 0.965 * amp[k])
             let tip = c + dir * (base + len)
-            bars.move(to: inner)
+            bars.move(to: c + dir * base)
             bars.addLine(to: tip)
             tips.append(tip)
+            // Peak-hold spark floating just beyond the spoke.
+            if sparks[k] > 0.3 {
+                let at = c + dir * (base + ext * CGFloat(sparks[k]) + 5 * l.scale)
+                dots.addEllipse(in: CGRect(x: at.x - dotR, y: at.y - dotR, width: dotR * 2, height: dotR * 2))
+            }
         }
 
         let gradient = Gradient(stops: [
@@ -138,6 +163,7 @@ enum OrbitalRing {
         let shading = GraphicsContext.Shading.radialGradient(gradient, center: c, startRadius: base, endRadius: base + ext)
 
         // Ribbon: a smooth closed curve through the spoke tips, filled down to the disc, behind the bars.
+        // It thickens from 0.20 to 0.50 opacity with energy and kicks.
         var ribbon = Path()
         func mid(_ a: CGPoint, _ b: CGPoint) -> CGPoint { CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2) }
         ribbon.move(to: mid(tips[n - 1], tips[0]))
@@ -147,13 +173,55 @@ enum OrbitalRing {
         ribbon.closeSubpath()
         ribbon.addEllipse(in: CGRect(x: c.x - base, y: c.y - base, width: base * 2, height: base * 2))
         var fill = ctx
-        fill.opacity = 0.25
+        fill.opacity = 0.20 + 0.30 * surge
         fill.fill(ribbon, with: shading, style: FillStyle(eoFill: true))
 
-        // Bars with an outer bloom in the album accent.
+        // Bars and sparks with an outer bloom that surges from 10 to 24 pt.
         var glow = ctx
-        glow.addFilter(.shadow(color: p.highlight.opacity(0.9), radius: 10 * l.scale))
-        glow.stroke(bars, with: shading, style: StrokeStyle(lineWidth: 2.2 * l.scale, lineCap: .round))
+        glow.addFilter(.shadow(color: p.highlight.opacity(0.9), radius: (10 + 14 * CGFloat(surge)) * l.scale))
+        glow.stroke(bars, with: shading, style: StrokeStyle(lineWidth: (2.2 + 0.6 * f.kick) * l.scale, lineCap: .round))
+        glow.fill(dots, with: .color(cream.mixed(p.highlight, 0.25)))
+    }
+}
+
+/// Peak-hold sparks: each spoke's spark rides its tip, is launched outward by fresh transients and falls
+/// back under gravity. Shared by every display (time-based, so each advances by its own elapsed time).
+final class OrbitalPeaks: @unchecked Sendable {
+    static let shared = OrbitalPeaks()
+
+    private static let gravity = 5.0       // extensions per second²
+    private static let launch = 2.4        // extensions per second per unit of flux
+    private static let ceiling = 1.05
+
+    private let lock = NSLock()
+    private var heights = [Double](repeating: 0, count: OrbitalRing.spokes)
+    private var velocity = [Double](repeating: 0, count: OrbitalRing.spokes)
+    private var lastClock: Double?
+
+    /// Advances the sparks to `clock` and returns each spoke's spark height (in units of `maxExtension`).
+    func step(levels: [Double], flux: [Double], clock: Double, still: Bool) -> [Double] {
+        // Stills have no history: place sparks just above the tips, higher where transients are fresh.
+        if still { return zip(levels, flux).map { min(Self.ceiling, $0 + 0.05 + 0.3 * $1) } }
+        lock.lock()
+        defer { lock.unlock() }
+        guard levels.count == heights.count else { return heights }
+        if let last = lastClock, abs(clock - last) < 0.0005 { return heights }
+        let dt = lastClock.map { min(max(clock - $0, 0), 1.0 / 15.0) } ?? (1.0 / 60.0)
+        lastClock = clock
+        for k in heights.indices {
+            let floor = levels[k] + 0.04
+            let resting = heights[k] - floor < 0.02
+            if resting, flux[k] > 0.12 { velocity[k] = max(velocity[k], flux[k] * Self.launch) }
+            velocity[k] -= Self.gravity * dt
+            heights[k] = min(Self.ceiling, heights[k] + velocity[k] * dt)
+            if heights[k] <= floor {
+                // The spoke carries the spark up (and catches it on the way down).
+                heights[k] = min(Self.ceiling, floor)
+                velocity[k] = max(0, velocity[k])
+            }
+            if heights[k] >= Self.ceiling { velocity[k] = min(0, velocity[k]) }
+        }
+        return heights
     }
 }
 
@@ -165,6 +233,8 @@ private struct OrbitalDisc: View {
     let accent: Color
     let scale: CGFloat
     let bass: Double
+    /// 0…1 strength of a heavy hit (kick above 0.55).
+    let hit: Double
 
     var body: some View {
         ZStack {
@@ -179,8 +249,8 @@ private struct OrbitalDisc: View {
         }
         .frame(width: diameter, height: diameter)
         .clipShape(Circle())
-        .overlay(Circle().stroke(accent, lineWidth: 2.5 * scale))
-        .shadow(color: accent.opacity(0.55), radius: (18 + 8 * CGFloat(bass)) * scale)
+        .overlay(Circle().stroke(accent, lineWidth: (2.5 + 2.5 * CGFloat(hit)) * scale))
+        .shadow(color: accent.opacity(0.55 + 0.37 * hit), radius: (18 + 6 * CGFloat(bass) + 24 * CGFloat(hit)) * scale)
     }
 
     /// Dark brushed-metal disc with a music note, until the cover arrives.
@@ -282,8 +352,13 @@ enum OrbitalLyrics {
                 var w = layer
                 w.opacity = Motion.clamp01(pop) * (0.85 + 0.15 * lit)
                 w.translateBy(x: p.origin.x + p.size.width / 2, y: p.origin.y + 6 * ts * CGFloat(1 - pop))
-                let k = 1.08 - 0.08 * CGFloat(pop)
+                // The sung word also pulses with the beat (+5% and a brighter bloom on a kick).
+                let beat = 0.05 * f.kick * CGFloat(lit)
+                let k = (1.08 - 0.08 * CGFloat(pop)) * (1 + beat)
                 w.scaleBy(x: k, y: k)
+                if lit > 0.5, f.kick > 0.05 {
+                    w.addFilter(.shadow(color: Color.white.opacity(0.45 * Double(f.kick)), radius: (6 + 10 * f.kick) * ts))
+                }
                 var text = p.text
                 text.shading = .color(lit > 0.5 ? .white : settled)
                 w.draw(text, at: .zero, anchor: .center)
@@ -330,53 +405,5 @@ enum OrbitalType {
 
     private static func face(_ name: String, _ fallback: LyricFont, _ size: CGFloat) -> Font {
         installed.contains(name) ? .custom(name, fixedSize: size) : fallback.font(size: size, weight: .black)
-    }
-}
-
-// MARK: - Track badge
-
-/// Compact Now Playing pill: mini cover, title and artist.
-private struct OrbitalBadge: View {
-    let track: LyricTrack
-    let scale: CGFloat
-
-    var body: some View {
-        HStack(spacing: 9 * scale) {
-            Group {
-                if let art = track.artwork {
-                    Image(nsImage: art).resizable().interpolation(.high).aspectRatio(contentMode: .fill)
-                } else {
-                    ZStack {
-                        Color(hex: "#2A2C31")
-                        Image(systemName: "music.note").font(.system(size: 13 * scale, weight: .semibold)).foregroundStyle(Color.white.opacity(0.6))
-                    }
-                }
-            }
-            .frame(width: 30 * scale, height: 30 * scale)
-            .clipShape(Circle())
-            VStack(alignment: .leading, spacing: 1) {
-                Text(Self.clip(track.title))
-                    .font(.system(size: 13 * scale, weight: .semibold))
-                    .foregroundStyle(Color.white)
-                if !track.artist.isEmpty {
-                    Text(Self.clip(track.artist))
-                        .font(.system(size: 12 * scale))
-                        .foregroundStyle(Color.white.opacity(0.62))
-                }
-            }
-            .lineLimit(1)
-        }
-        .fixedSize()
-        .padding(.leading, 6 * scale)
-        .padding(.trailing, 14 * scale)
-        .padding(.vertical, 6 * scale)
-        .background(Capsule().fill(Color.black.opacity(0.45)))
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.35), radius: 8 * scale, y: 2 * scale)
-    }
-
-    /// Keeps the pill compact without measuring: long titles end in an ellipsis.
-    static func clip(_ s: String, max: Int = 36) -> String {
-        s.count > max ? String(s.prefix(max - 1)).trimmingCharacters(in: .whitespaces) + "…" : s
     }
 }

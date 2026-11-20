@@ -209,15 +209,19 @@ private struct CodeLine: View {
             let text = String(seg.text.prefix(shown)).replacingOccurrences(of: " ", with: "\u{00A0}")
             let active = seg.wordIndex.map { frame.isActive(chunk.words[$0]) } ?? false
             let color = color(seg.role)
+            // Kicks and snare / vocal transients surge the active token's glow and brightness.
+            let surge = min(1.4, frame.kick + 0.6 * frame.flux)
             HStack(spacing: 0) {
                 Text(text)
                     .foregroundStyle(color)
                     .italic(seg.role == .comment)
+                    .brightness(active ? 0.18 * Double(surge) : 0)
                     .shadow(color: active ? color.opacity(0.9) : .clear, radius: 0.35)
-                    .shadow(color: active ? color.opacity(0.7) : .clear, radius: active ? 6 : 0)
+                    .shadow(color: active ? color.opacity(min(1, 0.7 + 0.3 * Double(surge))) : .clear, radius: active ? 6 + 12 * surge : 0)
                 if withIcons, let wi = seg.wordIndex, shown >= seg.text.count,
                    let v = WordVisualResolver.shared.visual(for: chunk.words[wi].text) {
-                    FlashIcon(visual: v, size: size * 0.9, color: active ? frame.palette.highlight : color, age: frame.position - window(si).1)
+                    FlashIcon(visual: v, size: size * 0.9, color: active ? frame.palette.highlight : color, age: frame.position - window(si).1,
+                              kick: active ? frame.kick : 0)
                         .padding(.horizontal, size * 0.25)
                 }
             }

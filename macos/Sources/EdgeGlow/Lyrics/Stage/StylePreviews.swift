@@ -36,9 +36,7 @@ enum StylePreviews {
                     palette: style.usesNativeApple ? .appleNative : palette,
                     font: style.usesNativeApple ? .sfPro : .sfRounded,
                     track: LyricTrack(title: DemoLyrics.title, artist: DemoLyrics.artist, artwork: art, blooms: blooms),
-                    shaders: false, locked: false, still: true,
-                    // Orbital: one still with the corner Now Playing pill.
-                    orbital: style == .orbital ? OrbitalInput(audio: nil, showTrackInfo: label == "e") : nil)
+                    shaders: false, locked: false, still: true)
                 let view = ZStack {
                     LinearGradient(colors: [Color(hex: "#1D2B44"), Color(hex: "#3A2149"), Color(hex: "#13161C")], startPoint: .topLeading, endPoint: .bottomTrailing)
                     LyricSceneView(style: style, frame: frame)

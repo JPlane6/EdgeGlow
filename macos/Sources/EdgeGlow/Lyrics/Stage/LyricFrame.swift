@@ -56,17 +56,19 @@ struct LyricFrame {
     let locked: Bool
     /// Rendering a still (previews): skip `.onAppear` entrances.
     let still: Bool
-    /// Live spectrum and options for the Orbital style (nil for every other style, and in previews).
-    let orbital: OrbitalInput?
+    /// Music dynamics for this frame (live FFT, Cloud Sync, or the beat-timed stand-in).
+    let audio: LyricAudio
     let cursor: LineCursor
 
     init(lyrics: TimedLyrics, position: Double, clock: Double, canvas: CGSize, bandHeight: CGFloat, bandCenterY: CGFloat,
          textScale: CGFloat, palette: LyricPalette, font: LyricFont, track: LyricTrack, shaders: Bool, locked: Bool, still: Bool = false,
-         orbital: OrbitalInput? = nil) {
+         audio: LyricAudio? = nil) {
         self.lyrics = lyrics; self.position = position; self.clock = clock; self.canvas = canvas
         self.bandHeight = bandHeight; self.bandCenterY = bandCenterY; self.textScale = textScale
         self.palette = palette; self.font = font; self.track = track; self.shaders = shaders && ShaderSupport.available
-        self.locked = locked; self.still = still; self.orbital = orbital
+        self.locked = locked; self.still = still
+        // Without a live feed (previews), the beat-timed stand-in keeps every style reacting.
+        self.audio = audio ?? .procedural(position: position, clock: clock, bpm: nil)
         self.cursor = lyrics.cursor(at: position)
     }
 
@@ -104,6 +106,17 @@ struct LyricFrame {
         }
         return out
     }
+
+    // MARK: Audio
+
+    /// Beat impulse, bass and energy as CGFloat multipliers' inputs (0…1).
+    var kick: CGFloat { CGFloat(Motion.clamp01(audio.kick)) }
+    var bass: CGFloat { CGFloat(Motion.clamp01(audio.bass)) }
+    var energy: CGFloat { CGFloat(Motion.clamp01(audio.energy)) }
+    var flux: CGFloat { CGFloat(Motion.clamp01(audio.flux)) }
+
+    /// `1 + amount × kick`: the standard beat thump for scales and widths.
+    func thump(_ amount: CGFloat) -> CGFloat { 1 + amount * kick }
 
     // MARK: Words
 

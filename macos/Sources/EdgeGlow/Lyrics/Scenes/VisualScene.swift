@@ -50,11 +50,13 @@ private struct VisualStack: View {
                 .font(frame.font.font(size: size, weight: .bold))
                 .foregroundStyle(active ? p.highlight : p.text)
                 .opacity(active ? 1 : 0.86)
-                .shadow(color: active ? p.highlight.opacity(0.6) : .clear, radius: size * 0.2)
+                .shadow(color: active ? p.highlight.opacity(0.6 + 0.3 * Double(frame.kick)) : .clear, radius: size * 0.2 * (1 + frame.kick))
             if let v = WordVisualResolver.shared.visual(for: w.text) {
-                VisualIcon(visual: v, size: size * 0.85, color: active ? p.highlight : p.secondary, age: frame.position - w.start)
+                VisualIcon(visual: v, size: size * 0.85, color: active ? p.highlight : p.secondary, age: frame.position - w.start,
+                           kick: active ? frame.kick : frame.kick * 0.4)
             }
         }
+        .scaleEffect(active ? frame.thump(0.08) : 1)
         .shadow(color: .black.opacity(0.3), radius: 3, y: 1)
         .animation(Motion.standard, value: active)
     }

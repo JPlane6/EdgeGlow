@@ -39,6 +39,14 @@ struct RGBColor: Equatable {
         return String(format: "#%02X%02X%02X", byte(r), byte(g), byte(b))
     }
 
+    /// Pushes the color away from its own luminance (gray) by `amount` (0 = unchanged).
+    func saturated(by amount: Double) -> RGBColor {
+        guard amount > 0.001 else { return self }
+        let l = luminance, k = 1 + amount
+        func c(_ v: Double) -> Double { min(1, max(0, l + (v - l) * k)) }
+        return RGBColor(r: c(r), g: c(g), b: c(b))
+    }
+
     func lerp(to target: RGBColor, t: Double) -> RGBColor {
         RGBColor(r: r + (target.r - r) * t, g: g + (target.g - g) * t, b: b + (target.b - b) * t)
     }
@@ -186,11 +194,11 @@ final class AppState: ObservableObject {
         static let lyricTextColor = "lyricTextColor"
         static let lyricHighlightColor = "lyricHighlightColor"
         static let lyricSecondaryColor = "lyricSecondaryColor"
-        static let orbitalShowTrackInfo = "orbitalShowTrackInfo"
         static let orbitalReplacesGlow = "orbitalReplacesGlow"
         // Removed settings, cleared on launch.
         static let legacyNotchGlowEnabled = "notchGlowEnabled"
         static let legacySelectedDisplayID = "selectedDisplayID"
+        static let legacyOrbitalShowTrackInfo = "orbitalShowTrackInfo"
     }
 
     // MARK: Playback (driven by MediaBridge)
@@ -271,8 +279,6 @@ final class AppState: ObservableObject {
     @Published var lyricTextColor: String { didSet { defaults.set(lyricTextColor, forKey: Key.lyricTextColor) } }
     @Published var lyricHighlightColor: String { didSet { defaults.set(lyricHighlightColor, forKey: Key.lyricHighlightColor) } }
     @Published var lyricSecondaryColor: String { didSet { defaults.set(lyricSecondaryColor, forKey: Key.lyricSecondaryColor) } }
-    /// Orbital style: show the compact Now Playing pill in the bottom-left corner.
-    @Published var orbitalShowTrackInfo: Bool { didSet { defaults.set(orbitalShowTrackInfo, forKey: Key.orbitalShowTrackInfo) } }
     /// Orbital style: hide the screen-edge glow while Orbital is the lyric style (its ring takes over).
     @Published var orbitalReplacesGlow: Bool { didSet { defaults.set(orbitalReplacesGlow, forKey: Key.orbitalReplacesGlow) } }
     /// Plays the built-in demo song through the lyric stage, even with nothing playing (not persisted).
@@ -297,7 +303,6 @@ final class AppState: ObservableObject {
             Key.lyricTextColor: "#FFFFFFFF",
             Key.lyricHighlightColor: "#5EE0FFFF",
             Key.lyricSecondaryColor: "#B387FFFF",
-            Key.orbitalShowTrackInfo: false,
             Key.orbitalReplacesGlow: false,
         ])
         thickness = defaults.double(forKey: Key.thickness)
@@ -321,7 +326,6 @@ final class AppState: ObservableObject {
         lyricTextColor = defaults.string(forKey: Key.lyricTextColor) ?? "#FFFFFFFF"
         lyricHighlightColor = defaults.string(forKey: Key.lyricHighlightColor) ?? "#5EE0FFFF"
         lyricSecondaryColor = defaults.string(forKey: Key.lyricSecondaryColor) ?? "#B387FFFF"
-        orbitalShowTrackInfo = defaults.bool(forKey: Key.orbitalShowTrackInfo)
         orbitalReplacesGlow = defaults.bool(forKey: Key.orbitalReplacesGlow)
 
         if let stored = defaults.stringArray(forKey: Key.activeDisplays) {
@@ -339,6 +343,7 @@ final class AppState: ObservableObject {
         }
         defaults.removeObject(forKey: Key.legacySelectedDisplayID)
         defaults.removeObject(forKey: Key.legacyNotchGlowEnabled)
+        defaults.removeObject(forKey: Key.legacyOrbitalShowTrackInfo)
     }
 
     private func saveActiveDisplays() {

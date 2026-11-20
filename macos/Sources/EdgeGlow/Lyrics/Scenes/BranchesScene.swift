@@ -95,10 +95,10 @@ struct BranchesScene: View {
         if d > 0.0005 {
             let lit = L.path.trimmedPath(from: 0, to: d)
             var g = ctx
-            g.addFilter(.shadow(color: p.highlight, radius: 6))
-            g.stroke(lit, with: .color(p.highlight), style: StrokeStyle(lineWidth: 2.3, lineCap: .round, lineJoin: .round))
+            g.addFilter(.shadow(color: p.highlight, radius: 6 * (1 + frame.kick)))
+            g.stroke(lit, with: .color(p.highlight), style: StrokeStyle(lineWidth: 2.3 * frame.thump(0.4), lineCap: .round, lineJoin: .round))
             if let tip = lit.currentPoint, d < 0.999 {
-                let r: CGFloat = 3.2
+                let r: CGFloat = 3.2 * frame.thump(0.5)
                 g.fill(Path(ellipseIn: CGRect(x: tip.x - r, y: tip.y - r, width: r * 2, height: r * 2)), with: .color(.white))
             }
         }
@@ -112,16 +112,16 @@ struct BranchesScene: View {
             if !arrived {
                 ctx.stroke(Path(ellipseIn: CGRect(x: c.x - 3, y: c.y - 3, width: 6, height: 6)), with: .color(p.text.opacity(0.2)), lineWidth: 1)
             } else if active {
-                let pulse = 7.5 + 1.2 * CGFloat(sin(frame.clock * 6))
+                let pulse = (7.5 + 1.2 * CGFloat(sin(frame.clock * 6))) * frame.thump(0.4)
                 let r = pulse * CGFloat(pop)
                 var g = ctx
-                g.addFilter(.shadow(color: p.highlight, radius: 9))
+                g.addFilter(.shadow(color: p.highlight, radius: 9 * (1 + frame.kick)))
                 g.fill(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)), with: .color(p.highlight))
                 let halo = r + 5 + 3 * CGFloat((frame.clock * 1.5).truncatingRemainder(dividingBy: 1))
                 ctx.stroke(Path(ellipseIn: CGRect(x: c.x - halo, y: c.y - halo, width: halo * 2, height: halo * 2)),
-                           with: .color(p.highlight.opacity(0.35)), lineWidth: 1.2)
+                           with: .color(p.highlight.opacity(0.35 + 0.4 * Double(frame.kick))), lineWidth: 1.2 * frame.thump(0.6))
             } else {
-                let r = 4.5 * CGFloat(pop)
+                let r = 4.5 * CGFloat(pop) * frame.thump(0.25)
                 var g = ctx
                 g.addFilter(.shadow(color: p.highlight.opacity(0.7), radius: 4))
                 g.fill(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)), with: .color(p.highlight.mixed(p.text, 0.35)))

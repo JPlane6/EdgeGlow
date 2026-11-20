@@ -18,6 +18,9 @@ struct ShipScene: View {
         .rotation3DEffect(.degrees(sin(f.clock * 0.45) * 8.0), axis: (x: 1, y: 0, z: 0), perspective: 0.45)
         .rotation3DEffect(.degrees(cos(f.clock * 0.35) * 12.0), axis: (x: 0, y: 1, z: 0), perspective: 0.45)
         .offset(x: sin(f.clock * 0.3) * 14, y: cos(f.clock * 0.4) * 8)
+        // Beat kick: the wall tips back and jumps toward the viewer on every hit.
+        .rotation3DEffect(.degrees(-6 * Double(f.kick)), axis: (x: 1, y: 0, z: 0), perspective: 0.45)
+        .scaleEffect(f.thump(0.035))
         .position(x: f.canvas.width / 2, y: f.bandCenterY)
     }
 }
@@ -51,7 +54,9 @@ private struct ShipWall: View {
             .font(frame.font.font(size: size, weight: .bold))
             .foregroundStyle(active ? frame.palette.highlight : frame.palette.text)
             .opacity(active ? 1.0 : 0.84)
-            .shadow(color: active ? frame.palette.highlight.opacity(0.65) : .clear, radius: active ? size * 0.22 : 0)
+            .scaleEffect(active ? frame.thump(0.08) : 1)
+            .shadow(color: active ? frame.palette.highlight.opacity(0.65 + 0.3 * Double(frame.kick)) : .clear,
+                    radius: active ? size * 0.22 * (1 + frame.kick) : 0)
             .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
             .animation(Motion.standard, value: active)
     }

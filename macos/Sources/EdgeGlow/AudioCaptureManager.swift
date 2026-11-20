@@ -16,41 +16,64 @@ enum AudioCaptureStatus: Equatable {
     case failed(String)
 }
 
+/// One reading of the music's dynamics, all 0…1.
+struct AudioPulse: Sendable {
+    /// 20–150 Hz envelope.
+    var bass = 0.0
+    /// 300 Hz–3.4 kHz envelope.
+    var vocal = 0.0
+    /// Beat impulse: snaps up on low-end (20–250 Hz) transients and snaps back within ~0.15 s.
+    var kick = 0.0
+    /// Overall loudness (auto-gained RMS) blended with transient flux.
+    var energy = 0.0
+    /// Broadband spectral flux (how much new energy just arrived), briefly held.
+    var flux = 0.0
+    /// `CACurrentMediaTime` of the write (0 = never).
+    var time: CFTimeInterval = 0
+}
+
 /// Latest band energies (0…1). Written ~50–120×/s off the main thread and read by the renderer every
 /// frame, so it is lock-protected instead of @Published (which would re-render SwiftUI at audio rate).
 final class AudioLevels: @unchecked Sendable {
-    /// Bands in the live spectrum (log-spaced, 30 Hz…16 kHz), read by the Orbital lyric style.
+    /// Bands in the live spectrum (log-spaced, 30 Hz…16 kHz), read by the lyric styles.
     static let spectrumBands = 48
 
     private let lock = NSLock()
-    private var bass = 0.0
-    private var vocal = 0.0
+    private var current = AudioPulse()
     private var spectrumValues = [Float](repeating: 0, count: AudioLevels.spectrumBands)
+    private var spectrumFlux = [Float](repeating: 0, count: AudioLevels.spectrumBands)
     private var spectrumTime: CFTimeInterval = 0
 
     func snapshot() -> (bass: Double, vocal: Double) {
         lock.lock()
         defer { lock.unlock() }
-        return (bass, vocal)
+        return (current.bass, current.vocal)
     }
 
-    func update(bass: Double, vocal: Double) {
+    func pulse() -> AudioPulse {
         lock.lock()
-        self.bass = bass
-        self.vocal = vocal
+        defer { lock.unlock() }
+        return current
+    }
+
+    func update(bass: Double, vocal: Double, kick: Double = 0, energy: Double = 0, flux: Double = 0) {
+        let now = CACurrentMediaTime()
+        lock.lock()
+        current = AudioPulse(bass: bass, vocal: vocal, kick: kick, energy: energy, flux: flux, time: now)
         lock.unlock()
     }
 
-    /// Latest auto-gained spectrum (0…1 per band) and when it was written (`CACurrentMediaTime`, 0 = never).
-    func spectrum() -> (bands: [Float], time: CFTimeInterval) {
+    /// Latest auto-gained spectrum and per-band positive flux (0…1 each), and when they were written.
+    func spectrum() -> (bands: [Float], flux: [Float], time: CFTimeInterval) {
         lock.lock()
         defer { lock.unlock() }
-        return (spectrumValues, spectrumTime)
+        return (spectrumValues, spectrumFlux, spectrumTime)
     }
 
-    func updateSpectrum(_ bands: [Float], time: CFTimeInterval) {
+    func updateSpectrum(_ bands: [Float], flux: [Float], time: CFTimeInterval) {
         lock.lock()
         spectrumValues = bands
+        spectrumFlux = flux
         spectrumTime = time
         lock.unlock()
     }
@@ -112,10 +135,24 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
     private var vocalEnvelope = 0.0
     private var bassPeak = RollingPeak()
     private var vocalPeak = RollingPeak()
-    /// Orbital spectrum: per-band rolling peaks and the FFT bin range of every band (rebuilt with the FFT).
-    private var spectrumPeaks = [RollingPeak](repeating: RollingPeak(), count: AudioLevels.spectrumBands)
+    /// Spectrum: per-band fast AGC, the FFT bin range of every band (rebuilt with the FFT), and how many
+    /// of the low bands lie under 250 Hz (the kick detector's range).
+    private var spectrumAGC = [FastAGC](repeating: FastAGC(), count: AudioLevels.spectrumBands)
     private var spectrumBins: [ClosedRange<Int>] = []
-    private var spectrumScratch = [Float](repeating: 0, count: AudioLevels.spectrumBands)
+    private var kickBandCount = 0
+    private var spectrumRaw = [Float](repeating: 0, count: AudioLevels.spectrumBands)
+    private var spectrumPrev = [Float](repeating: 0, count: AudioLevels.spectrumBands)
+    private var spectrumFluxHold = [Float](repeating: 0, count: AudioLevels.spectrumBands)
+    /// Transient metrics: AGC references and their envelopes.
+    private var kickFluxAGC = FastAGC()
+    private var fluxAGC = FastAGC()
+    private var rmsAGC = FastAGC()
+    private var kickEnvelope = 0.0
+    private var energyEnvelope = 0.0
+    private var fluxEnvelope = 0.0
+    /// Cloud Sync: the synthesized bass of the previous tick (its rises become kicks).
+    private var synthPrevBass = 0.0
+    private var synthKick = 0.0
     private var vocalSlow = 0.0
     private var lastVocalOnset: CFTimeInterval = 0
     private var captureRunning = false
@@ -546,45 +583,70 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         spectrumBins = []
     }
 
+    private static let spectrumLow = 30.0, spectrumHigh = 16_000.0
+
+    /// Lower edge (Hz) of spectrum band `i`.
+    private func bandEdge(_ i: Int) -> Double {
+        let hi = min(Self.spectrumHigh, sampleRate * 0.48)
+        return Self.spectrumLow * pow(hi / Self.spectrumLow, Double(i) / Double(AudioLevels.spectrumBands))
+    }
+
     /// FFT bin ranges for the log-spaced spectrum bands, 30 Hz…16 kHz. Low bands narrower than one bin
     /// share it, so every band has at least one bin.
     private func makeSpectrumBins() -> [ClosedRange<Int>] {
         let half = fftSize / 2
         let binHz = sampleRate / Double(fftSize)
-        let lo = 30.0, hi = min(16_000.0, sampleRate * 0.48)
         let n = AudioLevels.spectrumBands
+        kickBandCount = max(1, (0..<n).filter { bandEdge($0) < 250 }.count)
         return (0..<n).map { i in
-            let f0 = lo * pow(hi / lo, Double(i) / Double(n))
-            let f1 = lo * pow(hi / lo, Double(i + 1) / Double(n))
-            let b0 = min(half - 1, max(1, Int(f0 / binHz)))
-            let b1 = min(half - 1, max(b0, Int((f1 / binHz).rounded(.down))))
+            let b0 = min(half - 1, max(1, Int(bandEdge(i) / binHz)))
+            let b1 = min(half - 1, max(b0, Int((bandEdge(i + 1) / binHz).rounded(.down))))
             return b0...b1
         }
     }
 
-    /// Per-band auto-gained spectrum for the Orbital equalizer. Each band is divided by its own rolling
-    /// peak (so highs move as much as bass), blended with a shared reference so quiet bands stay quiet.
-    private func publishSpectrum(dt: Double, now: CFTimeInterval) {
+    /// Per-frame lerp factor `f` (defined at 60 fps) applied over `dt` seconds.
+    private static func perFrame(_ f: Double, dt: Double) -> Double { 1 - pow(1 - f, dt * 60) }
+
+    /// Spectrum, flux and the transient metrics. Every band is divided by its own fast-rising,
+    /// 1.5 s-decaying peak, so quiet and loud tracks both use the full range; flux is the positive
+    /// change of that per band. Returns the kick impulse, energy and broadband flux.
+    private func analyzeSpectrum(rms: Double, dt: Double) -> (kick: Double, energy: Double, flux: Double) {
         if spectrumBins.isEmpty { spectrumBins = makeSpectrumBins() }
-        var loudest = 0.0
-        var amps = [Double](repeating: 0, count: spectrumBins.count)
+        let n = spectrumBins.count
+        var fluxSum = 0.0, kickFluxSum = 0.0
+        let hold = Float(exp(-dt / 0.045))
         power.withUnsafeBufferPointer { p in
             for (i, bins) in spectrumBins.enumerated() {
                 var sum: Float = 0
                 vDSP_sve(p.baseAddress! + bins.lowerBound, 1, &sum, vDSP_Length(bins.count))
                 // RMS-per-bin amplitude, so wide high bands don't read louder just for holding more bins.
                 let a = sqrt(Double(sum) / Double(bins.count)) * 2 / Double(fftSize)
-                amps[i] = a
-                loudest = max(loudest, a)
+                let db = 20 * log10(max(a, 1e-9))
+                let gate = min(max((db - Self.gateDb) / Self.gateRangeDb, 0), 1)
+                let raw = Float(spectrumAGC[i].normalize(a, dt: dt, floor: Self.noiseFloor) * gate)
+                let flux = max(0, raw - spectrumPrev[i])
+                spectrumPrev[i] = raw
+                spectrumRaw[i] = raw
+                // Held for ~45 ms so 60 fps readers never miss a transient that landed between frames.
+                spectrumFluxHold[i] = max(flux, spectrumFluxHold[i] * hold)
+                fluxSum += Double(flux)
+                if i < kickBandCount { kickFluxSum += Double(flux) }
             }
         }
-        for i in amps.indices {
-            let own = Self.autoGain(amps[i], peak: &spectrumPeaks[i], dt: dt)
-            let shared = loudest > 0 ? min(1, amps[i] / max(loudest, Self.noiseFloor)) : 0
-            // Spikes are punchier with a slight power curve; quiet passages ripple instead of filling the ring.
-            spectrumScratch[i] = Float(pow(own * 0.7 + shared.squareRoot() * 0.3, 1.35))
-        }
-        state.audioLevels.updateSpectrum(spectrumScratch, time: now)
+
+        // Kick: low-end onset strength against its own recent peak, gated so noise never fires it.
+        let onset = kickFluxAGC.normalize(kickFluxSum / Double(kickBandCount), dt: dt, floor: 0.035)
+        let kickTarget = min(max((onset - 0.22) / 0.55, 0), 1) * min(1, bassEnvelope * 2.5)
+        kickEnvelope += (kickTarget - kickEnvelope) * Self.perFrame(kickTarget > kickEnvelope ? 0.90 : 0.22, dt: dt)
+
+        // Energy: auto-gained loudness plus broadband transients.
+        let fluxNorm = fluxAGC.normalize(fluxSum / Double(n), dt: dt, floor: 0.02)
+        let loud = rmsAGC.normalize(rms, dt: dt, floor: pow(10, -50.0 / 20))
+        let energyTarget = min(1, 0.6 * pow(loud, 1.3) + 0.55 * fluxNorm)
+        energyEnvelope += (energyTarget - energyEnvelope) * Self.perFrame(energyTarget > energyEnvelope ? 0.75 : 0.2, dt: dt)
+        fluxEnvelope = max(fluxNorm, fluxEnvelope * exp(-dt / 0.08))
+        return (kickEnvelope, energyEnvelope, fluxEnvelope)
     }
 
     private func analyze(_ mono: [Float], sampleRate rate: Double) {
@@ -601,6 +663,7 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         updateLevelSource(now: now)
 
         let n = fftSize
+        let rmsLevel = Double(rms)
         // Sliding window over the most recent `n` samples; one FFT per delivered buffer.
         ring.append(contentsOf: mono)
         if ring.count > n { ring.removeFirst(ring.count - n) }
@@ -637,11 +700,13 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         bassEnvelope = Self.envelope(bassEnvelope, target: bassLevel, dt: dt, attack: 0.012, release: 0.16)
         vocalEnvelope = Self.envelope(vocalEnvelope, target: vocalLevel, dt: dt, attack: 0.03, release: 0.35)
         // The FFT keeps running under Cloud Sync (to notice audio coming back) but only publishes when live.
+        let transient = analyzeSpectrum(rms: rmsLevel, dt: dt)
         if levelSource != .cloudSync {
-            state.audioLevels.update(bass: bassEnvelope, vocal: vocalEnvelope)
+            state.audioLevels.update(bass: bassEnvelope, vocal: vocalEnvelope,
+                                     kick: transient.kick, energy: transient.energy, flux: transient.flux)
         }
-        // Only the live FFT has a real spectrum; under Cloud Sync the Orbital ring falls back to its own wave.
-        if levelSource == .live { publishSpectrum(dt: dt, now: now) }
+        // Only the live FFT has a real spectrum; under Cloud Sync the lyric styles fall back to their own wave.
+        if levelSource == .live { state.audioLevels.updateSpectrum(spectrumRaw, flux: spectrumFluxHold, time: now) }
     }
 
     /// A sudden rise of 300 Hz–3.4 kHz energy above its own recent average marks a vocal (or other
@@ -703,8 +768,17 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         vocalEnvelope = 0
         bassPeak.reset()
         vocalPeak.reset()
-        for i in spectrumPeaks.indices { spectrumPeaks[i].reset() }
-        state.audioLevels.updateSpectrum([Float](repeating: 0, count: AudioLevels.spectrumBands), time: 0)
+        for i in spectrumAGC.indices { spectrumAGC[i].reset() }
+        kickFluxAGC.reset()
+        fluxAGC.reset()
+        rmsAGC.reset()
+        kickEnvelope = 0
+        energyEnvelope = 0
+        fluxEnvelope = 0
+        let silent = [Float](repeating: 0, count: AudioLevels.spectrumBands)
+        spectrumPrev = silent
+        spectrumFluxHold = silent
+        state.audioLevels.updateSpectrum(silent, flux: silent, time: 0)
         vocalSlow = 0
         setAudioPresent(false)
         updateLevelSource(now: CACurrentMediaTime())
@@ -795,8 +869,28 @@ final class AudioCaptureManager: NSObject, SCStreamOutput, SCStreamDelegate {
         lastSynthTime = now
         let trackTime = state.playbackClock.currentTrackTime(at: now)
         let levels = state.cloudSync.levels(at: trackTime, dt: dt)
-        state.audioLevels.update(bass: levels.bass, vocal: levels.vocal)
+        // Synthesized kick: every rise of the synthesized bass fires the impulse.
+        let rise = max(0, levels.bass - synthPrevBass)
+        synthPrevBass = levels.bass
+        let kickTarget = min(1, rise * 9)
+        synthKick += (kickTarget - synthKick) * Self.perFrame(kickTarget > synthKick ? 0.90 : 0.22, dt: dt)
+        let energy = min(1, 0.55 * levels.bass + 0.45 * levels.vocal + 0.3 * synthKick)
+        state.audioLevels.update(bass: levels.bass, vocal: levels.vocal, kick: synthKick, energy: energy, flux: synthKick)
     }
+}
+
+/// Fast-rising, slow-falling peak follower for automatic gain: jumps to every new peak at once and
+/// decays exponentially (~1.5 s) so quiet passages regain full range quickly.
+private struct FastAGC {
+    private var peak = 0.0
+
+    /// `x` as a 0…1 fraction of the recent peak (never divided by less than `floor`).
+    mutating func normalize(_ x: Double, dt: Double, floor: Double, decay: Double = 1.5) -> Double {
+        peak = max(x, peak * exp(-dt / decay))
+        return min(1, x / max(peak, floor))
+    }
+
+    mutating func reset() { peak = 0 }
 }
 
 /// Rolling maximum of a band's amplitude over the last ~4 s, kept as 16 buckets of 0.25 s so each update

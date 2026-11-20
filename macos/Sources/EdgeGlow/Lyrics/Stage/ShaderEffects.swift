@@ -11,10 +11,12 @@ enum ShaderSupport {
 struct FisheyeLens: ViewModifier {
     var enabled: Bool
     var size: CGSize
+    /// Bulge strength; 0.45 at rest, pumped toward 0.60 by bass hits.
+    var strength: CGFloat = 0.45
 
     func body(content: Content) -> some View {
         content.distortionEffect(
-            ShaderLibrary.fisheye(.float2(Float(size.width), Float(size.height)), .float(0.45), .float(2.2)),
+            ShaderLibrary.fisheye(.float2(Float(size.width), Float(size.height)), .float(Float(strength)), .float(2.2)),
             maxSampleOffset: CGSize(width: size.width * 0.45, height: size.height * 0.45),
             isEnabled: enabled && ShaderSupport.available)
     }
@@ -36,8 +38,8 @@ struct MotionBlurModifier: ViewModifier {
 }
 
 extension View {
-    func fisheyeLens(enabled: Bool, size: CGSize) -> some View {
-        modifier(FisheyeLens(enabled: enabled, size: size))
+    func fisheyeLens(enabled: Bool, size: CGSize, strength: CGFloat = 0.45) -> some View {
+        modifier(FisheyeLens(enabled: enabled, size: size, strength: strength))
     }
 
     func motionBlur(_ velocity: CGVector, enabled: Bool) -> some View {

@@ -122,8 +122,8 @@ EdgeGlow shows synced lyrics next to the edge glow. The popover's mode picker ch
   Apple Design Map and the location cards use real dark-mode `MKMapSnapshotter` maps.
 - **Orbital:** the album cover as a disc in the center of the screen, pulsing with the bass, wrapped by a 120-spoke
   360° equalizer fed by the live system-audio FFT (48 log-spaced bands, mirrored left/right; a beat-synced wave
-  stands in when audio isn't captured), with the line in bold kinetic caps on the left. Popover options: **Badge**
-  (a corner Now Playing pill) and **Replace** (hide the edge glow while Orbital shows).
+  stands in when audio isn't captured), with the line in bold kinetic caps on the left. Popover option: **Replace**
+  (hide the edge glow while Orbital shows).
 - **Shaders:** a 13-tap directional motion blur and a fisheye lens, as SwiftUI `[[ stitchable ]]` Metal shaders.
   `build.sh` compiles them into `default.metallib` when a Metal toolchain is installed (Xcode 26+:
   `xcodebuild -downloadComponent MetalToolchain`); Command Line Tools-only builds run with the effects off.

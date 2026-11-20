@@ -82,7 +82,8 @@ struct AppleDesignScene: View {
         let layout = AppleThreadLayout(frame: f, thread: thread)
         let maps = layout.mapPictures()
         AppleThreadCanvas(frame: f, thread: thread, layout: layout, maps: maps)
-            .motionBlur(CGVector(dx: 0, dy: max(-36, min(36, layout.travelVelocity / 60 * 1.3))), enabled: f.shaders)
+            // Kicks add a short vertical smear on top of the scroll blur.
+            .motionBlur(CGVector(dx: 0, dy: max(-36, min(36, layout.travelVelocity / 60 * 1.3 + 9 * f.kick))), enabled: f.shaders)
     }
 }
 
@@ -236,10 +237,13 @@ struct AppleThreadCanvas: View {
             let words = frame.group(line)
             let lastStart = words.last(where: frame.arrived)?.start ?? -10
             let micro = 0.018 * CGFloat(exp(-10 * max(0, frame.position - lastStart)))
-            let squash = 1 + 0.07 * (1 - enter)
-            transformed(&ctx, around: anchor, scale: 0.55 + 0.45 * enter + micro, squashY: squash,
-                        tilt: Double(outgoing ? -2.5 : 2.5) * Double(1 - enter))
+            // The newest bubble thumps with the beat: a small scale kick, squash and tilt.
+            let beat = p.rank == 0 ? frame.kick : 0
+            let squash = 1 + 0.07 * (1 - enter) + 0.035 * beat
+            transformed(&ctx, around: anchor, scale: 0.55 + 0.45 * enter + micro + 0.03 * beat, squashY: squash,
+                        tilt: Double(outgoing ? -2.5 : 2.5) * Double(1 - enter) + Double(outgoing ? -0.8 : 0.8) * Double(beat))
             if echo { drawEcho(rect, outgoing: outgoing, age: frame.position - (words.first?.start ?? 0), in: ctx) }
+            if beat > 0.35 { drawEcho(rect, outgoing: outgoing, age: 0.8 * Double(1 - beat), in: ctx) }
             fillBubble(rect, outgoing: outgoing, tail: tail, in: ctx)
             let (fs, weight) = AppleThreadLayout.bubbleFont(hero: hero, s: s)
             let text = Text(fill(words, size: fs, weight: weight == .bold ? .bold : .regular))

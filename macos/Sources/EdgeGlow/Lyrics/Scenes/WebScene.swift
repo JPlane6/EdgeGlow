@@ -26,7 +26,8 @@ struct WebScene: View {
         let lastStart = words.last(where: frame.arrived)?.start ?? -10
         let dt = pos - lastStart
         let quiver = 1 + 0.012 * exp(-5 * dt) * sin(25 * dt)
-        let R = min(size.width, size.height) * 0.38 * CGFloat(quiver)
+        // Bass hits push the whole web outward (up to +8%), so it vibrates with the beat.
+        let R = min(size.width, size.height) * 0.38 * CGFloat(quiver) * frame.thump(0.08)
 
         func dir(_ i: Int) -> CGPoint {
             let theta = (2 * Double.pi * Double(i) / Double(count)) - Double.pi / 2
@@ -81,12 +82,12 @@ struct WebScene: View {
             strand.addLine(to: tip)
             if active {
                 var c = ctx
-                c.addFilter(.shadow(color: p.highlight, radius: 6))
-                c.stroke(strand, with: .color(p.highlight), style: StrokeStyle(lineWidth: 3.2, lineCap: .round))
-                let r: CGFloat = 4 + CGFloat(sin(frame.clock * 7)) * 0.8
+                c.addFilter(.shadow(color: p.highlight, radius: 6 * (1 + frame.kick)))
+                c.stroke(strand, with: .color(p.highlight), style: StrokeStyle(lineWidth: 3.2 * frame.thump(0.4), lineCap: .round))
+                let r: CGFloat = (4 + CGFloat(sin(frame.clock * 7)) * 0.8) * frame.thump(0.5)
                 c.fill(Path(ellipseIn: CGRect(x: tip.x - r, y: tip.y - r, width: r * 2, height: r * 2)), with: .color(.white))
             } else {
-                ctx.stroke(strand, with: .color(p.text.opacity(0.55)), style: StrokeStyle(lineWidth: 2.0, lineCap: .round))
+                ctx.stroke(strand, with: .color(p.text.opacity(0.55)), style: StrokeStyle(lineWidth: 2.0 * frame.thump(0.4), lineCap: .round))
             }
 
             // Horizontal labels at the strand tip, aligned away from the center so they stay readable.

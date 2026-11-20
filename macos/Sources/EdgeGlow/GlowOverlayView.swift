@@ -67,6 +67,10 @@ final class GlowRenderer: ObservableObject {
     private var lastDate: Date?
     private var angle = 0.0
     private var pulse = 0.0
+    /// Beat impulse (0…1) and broadband flux, followed with a near-instant attack and fast snap-back.
+    private var kick = 0.0
+    private var flux = 0.0
+    private var lastKick = 0.0
     private var presence = 0.0
     private var primary = RGBColor.neonCyan
     private var secondary = RGBColor.neonMagenta
@@ -160,19 +164,22 @@ final class GlowRenderer: ObservableObject {
 
         // Live system-audio energies (already envelope-followed on the audio thread).
         let audioReactive = state.audioReactive
-        let levels = audioReactive ? state.audioLevels.snapshot() : (bass: 0.0, vocal: 0.0)
+        let live = audioReactive ? state.audioLevels.pulse() : AudioPulse()
+        let levels = (bass: live.bass, vocal: live.vocal)
 
         let rawPulse: Double
         if audioReactive {
-            // The kick drives the pulse directly.
-            rawPulse = levels.bass
+            // High-contrast curve keeps calm passages tight; kicks and transients slam on top of it.
+            rawPulse = min(1.7, pow(live.bass, 1.3) + 0.6 * live.kick + 0.25 * live.flux + 0.12 * pow(live.vocal, 1.3))
         } else {
             // Slow ambient breathing while idle (or while system audio access is unavailable).
             let t = date.timeIntervalSinceReferenceDate
             rawPulse = 0.35 * pow(0.5 + 0.5 * sin(2 * .pi * t / 6), 2.2)
         }
-        // Light smoothing turns ~50 Hz audio updates into a fluid 60 fps pulse without dulling the kick.
-        pulse += (rawPulse - pulse) * approach(30)
+        // Near-instant attack, fast snap-back: ~50 Hz audio updates become a 60 fps thump.
+        pulse += (rawPulse - pulse) * approach(rawPulse > pulse ? 75 : 14)
+        kick += (live.kick - kick) * approach(live.kick > kick ? 90 : 13)
+        flux += (live.flux - flux) * approach(live.flux > flux ? 80 : 12)
 
         // Vocal velocity: the comets glide when there's no singing and surge on dense vocals. Speeding up
         // reacts quickly, slowing down eases off, and integrating dt means the comets never jump.
@@ -205,7 +212,10 @@ final class GlowRenderer: ObservableObject {
         // Physics keeps stepping even while faded out, so ripples and sparks always settle cleanly.
         // Sparks Only *is* the kinetic effect, so it ignores the toggle.
         let kinetic = state.kineticEffects || style == .sparksOnly
-        updateKinetics(dt: dt, levels: levels, spawning: audioReactive && kinetic, merged: merged, state: state)
+        // A fresh kick (rising through 0.6) counts as a hit even when the bass envelope barely moves.
+        let kickEdge = kick > 0.6 && lastKick <= 0.6
+        lastKick = kick
+        updateKinetics(dt: dt, levels: levels, kickEdge: kickEdge, spawning: audioReactive && kinetic, merged: merged, state: state)
 
         guard presence > 0.002 else { return }
 
@@ -250,7 +260,8 @@ final class GlowRenderer: ObservableObject {
 
     /// The original two-layer rim with a rotating conic gradient.
     private func drawRim(in context: GraphicsContext, bounds: CGRect, angle: Double, beat: Double, bloom: Double, opacity: Double, aberration: Double, state: AppState) {
-        let gradient = Gradient(colors: [primary.color, secondary.color, primary.color, secondary.color, primary.color])
+        let p = litPrimary.color, s = litSecondary.color
+        let gradient = Gradient(colors: [p, s, p, s, p])
         let shading = GraphicsContext.Shading.conicGradient(
             gradient,
             center: CGPoint(x: bounds.midX, y: bounds.midY),
@@ -260,12 +271,14 @@ final class GlowRenderer: ObservableObject {
         // Layer 1: ambient spill. Stroke is centered on the bezel, so the inner half bleeds onto the screen.
         let ambientPath = edgePath(in: bounds, inset: 0)
         var ambient = context
-        ambient.addFilter(.blur(radius: state.glowSpread * bloom))
-        ambient.opacity = opacity
-        ambient.stroke(ambientPath, with: shading, lineWidth: state.thickness * (0.75 + 0.55 * beat))
+        // Kicks surge the spread, thickness and brightness outward, then snap back.
+        let hit = kickHit(state)
+        ambient.addFilter(.blur(radius: state.glowSpread * (bloom + 0.5 * hit)))
+        ambient.opacity = min(1, opacity * (1 + 0.3 * hit))
+        ambient.stroke(ambientPath, with: shading, lineWidth: state.thickness * (0.75 + 0.55 * beat + 0.6 * hit))
 
         // Layer 2: crisp neon core pressed right against the bezel.
-        let rimWidth = max(4, state.thickness * 0.22) * (1 + 0.25 * beat)
+        let rimWidth = max(4, state.thickness * 0.22) * (1 + 0.25 * beat + 0.35 * hit)
         let rimPath = edgePath(in: bounds, inset: rimWidth * 0.25)
         var rim = context
         rim.addFilter(.blur(radius: 8))
@@ -309,11 +322,18 @@ final class GlowRenderer: ObservableObject {
         return alphas
     }()
 
-    private var cometHeadColor: RGBColor { primary.lerp(to: .white, t: 0.35) }
+    /// Album colors with saturation pushed up on every kick (and back as it snaps away).
+    private var litPrimary: RGBColor { primary.saturated(by: 0.55 * kick) }
+    private var litSecondary: RGBColor { secondary.saturated(by: 0.55 * kick) }
+
+    /// Kick surge scaled by the Reactivity slider.
+    private func kickHit(_ state: AppState) -> Double { min(1.5, kick * state.reactivity) }
+
+    private var cometHeadColor: RGBColor { litPrimary.lerp(to: .white, t: 0.35) }
 
     /// Color at fraction `t` along a comet: white-hot head, primary body, secondary tail.
     private func cometColor(at t: Double) -> RGBColor {
-        t < 0.3 ? cometHeadColor.lerp(to: primary, t: t / 0.3) : primary.lerp(to: secondary, t: (t - 0.3) / 0.7)
+        t < 0.3 ? cometHeadColor.lerp(to: litPrimary, t: t / 0.3) : litPrimary.lerp(to: litSecondary, t: (t - 0.3) / 0.7)
     }
 
     /// Comets over an otherwise dark bezel, with the same ambient spill + crisp core layering as the rim.
@@ -323,13 +343,14 @@ final class GlowRenderer: ObservableObject {
 
         let ambientPath = edgePath(in: bounds, inset: 0)
         var ambient = context
-        ambient.addFilter(.blur(radius: state.glowSpread * (0.8 + 0.45 * beat)))
-        ambient.opacity = opacity * (0.7 + 0.3 * min(beat, 1))
+        let hit = kickHit(state)
+        ambient.addFilter(.blur(radius: state.glowSpread * (0.8 + 0.45 * beat + 0.5 * hit)))
+        ambient.opacity = min(1, opacity * (0.7 + 0.3 * min(beat, 1) + 0.3 * hit))
         ambient.drawLayer { layer in
-            self.strokeComets(comets, along: ambientPath, length: length, lineWidth: state.thickness * (0.85 + 0.55 * beat), into: &layer)
+            self.strokeComets(comets, along: ambientPath, length: length, lineWidth: state.thickness * (0.85 + 0.55 * beat + 0.6 * hit), into: &layer)
         }
 
-        let rimWidth = max(4, state.thickness * 0.22) * (1 + 0.25 * beat)
+        let rimWidth = max(4, state.thickness * 0.22) * (1 + 0.25 * beat + 0.35 * hit)
         let rimPath = edgePath(in: bounds, inset: rimWidth * 0.25)
         var rim = context
         rim.addFilter(.blur(radius: 8 * (1 + 0.5 * beat)))
@@ -437,11 +458,12 @@ final class GlowRenderer: ObservableObject {
         guard !blooms.isEmpty else { return }
 
         let path = edgePath(in: bounds, inset: 0)
-        let reach = 0.01 + 0.008 * min(beat, 1.5)
+        let hit = kickHit(state)
+        let reach = 0.01 + 0.008 * min(beat, 1.5) + 0.006 * hit
         var flash = context
         flash.blendMode = .plusLighter
-        flash.addFilter(.blur(radius: state.glowSpread * (0.5 + 0.3 * beat)))
-        let style = StrokeStyle(lineWidth: state.thickness * (1 + 0.6 * beat), lineCap: .round)
+        flash.addFilter(.blur(radius: state.glowSpread * (0.5 + 0.3 * beat + 0.3 * hit)))
+        let style = StrokeStyle(lineWidth: state.thickness * (1 + 0.6 * beat + 0.5 * hit), lineCap: .round)
         for bloom in blooms {
             var layer = flash
             layer.opacity = opacity * bloom.glow
@@ -482,7 +504,7 @@ final class GlowRenderer: ObservableObject {
 
     // MARK: Kinetic physics
 
-    private func updateKinetics(dt: Double, levels: (bass: Double, vocal: Double), spawning: Bool, merged: Bool, state: AppState) {
+    private func updateKinetics(dt: Double, levels: (bass: Double, vocal: Double), kickEdge: Bool, spawning: Bool, merged: Bool, state: AppState) {
         bassCooldown -= dt
         vocalCooldown -= dt
 
@@ -492,8 +514,8 @@ final class GlowRenderer: ObservableObject {
 
             // Bass transient: the envelope jumps well above its recent average.
             let bassRise = levels.bass - bassAverage
-            if bassCooldown <= 0, levels.bass > 0.45, bassRise > 0.16 {
-                let hit = min(max(bassRise * 2.2, 0.3), 1)
+            if bassCooldown <= 0, (levels.bass > 0.45 && bassRise > 0.16) || kickEdge {
+                let hit = min(max(max(bassRise * 2.2, kick), 0.3), 1)
                 let kick = hit * state.reactivity * 1_100 * (0.6 + state.thickness / 80)
                 for index in hot {
                     pluck(at: index, velocity: kick, width: 7)

@@ -11,11 +11,14 @@ struct VisualIcon: View {
     let size: CGFloat
     let color: Color
     var age: Double = 10
+    /// Beat impulse (0…1): a crisp micro-bounce on every kick.
+    var kick: CGFloat = 0
 
     var body: some View {
         let k = Motion.spring(age, response: 0.30, damping: 0.25)
         glyph
-            .scaleEffect(0.2 + 0.8 * k)
+            .scaleEffect((0.2 + 0.8 * k) * (1 + 0.14 * kick))
+            .offset(y: -size * 0.08 * kick)
             .opacity(Motion.smooth(age / 0.12))
             .rotationEffect(.degrees(-12 * (1 - k)))
     }
@@ -39,9 +42,10 @@ struct FlashIcon: View {
     let size: CGFloat
     let color: Color
     var age: Double = 10
+    var kick: CGFloat = 0
 
     var body: some View {
-        VisualIcon(visual: visual, size: size, color: color, age: age)
-            .shadow(color: color.opacity(0.55), radius: 6)
+        VisualIcon(visual: visual, size: size, color: color, age: age, kick: kick)
+            .shadow(color: color.opacity(0.55), radius: 6 * (1 + kick))
     }
 }

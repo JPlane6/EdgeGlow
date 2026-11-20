@@ -37,15 +37,9 @@ struct LyricStage: View {
             track: LyricTrack(title: source.title, artist: source.artist, artwork: art.artwork, blooms: art.blooms),
             shaders: true,
             locked: state.screenLocked,
-            orbital: style == .orbital ? orbitalInput(date: date, position: position) : nil)
-    }
-
-    /// Orbital only: the smoothed live spectrum (or its beat-synced stand-in) for this frame.
-    private func orbitalInput(date: Date, position: Double) -> OrbitalInput {
-        let audio = OrbitalAudioFollower.shared.sample(
-            date: date, levels: state.audioLevels, live: state.levelSource == .live,
-            position: position, clock: LyricClock.seconds(date), bpm: state.trackBPM)
-        return OrbitalInput(audio: audio, showTrackInfo: state.orbitalShowTrackInfo)
+            audio: LyricAudioFollower.shared.sample(
+                date: date, levels: state.audioLevels, source: state.levelSource,
+                position: position, clock: LyricClock.seconds(date), bpm: state.trackBPM))
     }
 
     /// The user's size slider times a screen factor (1.0 on a 13" laptop, larger on big displays).

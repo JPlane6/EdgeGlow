@@ -302,16 +302,22 @@ enum MapMath {
     }
 
     /// The pulsing blue "you are here" dot.
-    static func drawLocationDot(at p: CGPoint, in ctx: GraphicsContext, clock: Double, scale: CGFloat = 1) {
+    /// - Parameter kick: beat impulse (0…1): the halo flashes outward and the dot swells on every hit.
+    static func drawLocationDot(at p: CGPoint, in ctx: GraphicsContext, clock: Double, scale: CGFloat = 1, kick: CGFloat = 0) {
         let pulse = (clock * 0.9).truncatingRemainder(dividingBy: 1)
         let halo = (10 + 18 * CGFloat(pulse)) * scale
         ctx.fill(Path(ellipseIn: CGRect(x: p.x - halo, y: p.y - halo, width: halo * 2, height: halo * 2)),
                  with: .color(AppleColors.blue.opacity(0.35 * (1 - pulse))))
-        let ring = 9 * scale
+        if kick > 0.05 {
+            let beatHalo = (12 + 16 * kick) * scale
+            ctx.fill(Path(ellipseIn: CGRect(x: p.x - beatHalo, y: p.y - beatHalo, width: beatHalo * 2, height: beatHalo * 2)),
+                     with: .color(AppleColors.blue.opacity(0.45 * Double(kick))))
+        }
+        let ring = 9 * scale * (1 + 0.18 * kick)
         var g = ctx
         g.addFilter(.shadow(color: .black.opacity(0.4), radius: 3))
         g.fill(Path(ellipseIn: CGRect(x: p.x - ring, y: p.y - ring, width: ring * 2, height: ring * 2)), with: .color(.white))
-        let core = 6.5 * scale
+        let core = 6.5 * scale * (1 + 0.18 * kick)
         ctx.fill(Path(ellipseIn: CGRect(x: p.x - core, y: p.y - core, width: core * 2, height: core * 2)), with: .color(AppleColors.blue))
     }
 

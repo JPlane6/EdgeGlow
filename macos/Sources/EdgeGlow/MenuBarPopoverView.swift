@@ -206,10 +206,8 @@ struct MenuBarPopoverView: View {
                 pill("Demo", symbol: "play.circle.fill", isOn: $state.lyricsDemo)
             }
             if state.lyricStyle == .orbital {
-                // Orbital-only options: the corner Now Playing pill, and letting the ring stand in for the rim.
+                // Orbital-only option: let the ring stand in for the rim.
                 HStack(spacing: 6) {
-                    pill("Badge", symbol: "music.note", isOn: $state.orbitalShowTrackInfo)
-                        .help("Show a small Now Playing pill in the bottom-left corner")
                     pill("Replace", symbol: "circle.dashed", isOn: $state.orbitalReplacesGlow)
                         .help("Hide the screen-edge glow while Orbital is showing; its ring takes over")
                 }
